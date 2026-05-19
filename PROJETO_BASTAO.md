@@ -18,7 +18,7 @@ Responsável por toda a interface física com os sensores e gerenciamento de ene
 
 ### 2.2. Módulo de Conectividade (ESP32)
 Responsável pela lógica de rede, criptografia e integração com a nuvem.
-- **Microcontrolador:** ESP32 (usando ESP-IDF e FreeRTOS).
+- **Microcontrolador:** ESP32 (usando ESP-IDF v5.x e FreeRTOS).
 - **Conectividade Local:** BLE MESH (Bluetooth Low Energy Mesh).
   - **Papel:** Coordenador/Provisionador.
   - **Endpoint:** Tela K10.

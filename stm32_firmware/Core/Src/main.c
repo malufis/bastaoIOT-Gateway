@@ -21,6 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include <string.h>
 
 /* USER CODE END Includes */
 
@@ -48,6 +50,13 @@ UART_HandleTypeDef huart3;
 UART_HandleTypeDef huart4;
 
 /* USER CODE BEGIN PV */
+RFID_Buffer_t buffer_yrm100 = {0};
+RFID_Buffer_t buffer_wl134 = {0};
+uint8_t byte_yrm100;
+uint8_t byte_wl134;
+
+uint32_t last_battery_check = 0;
+float battery_voltage = 0.0f;
 
 /* USER CODE END PV */
 
@@ -103,6 +112,13 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USART4_UART_Init();
   /* USER CODE BEGIN 2 */
+  // Power on RFID sensors
+  HAL_GPIO_WritePin(WL134_PWR_PORT, WL134_PWR_PIN, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(YRM100_PWR_PORT, YRM100_PWR_PIN, GPIO_PIN_SET);
+
+  // Start UART reception in interrupt mode
+  HAL_UART_Receive_IT(&huart1, &byte_wl134, 1);
+  HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
 
   /* USER CODE END 2 */
 
@@ -110,6 +126,17 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    RFID_Process_YRM100();
+    RFID_Process_WL134();
+    
+    if (HAL_GetTick() - last_battery_check > 5000) {
+        Battery_Read();
+        last_battery_check = HAL_GetTick();
+        
+        char msg[128];
+        sprintf(msg, "{\"type\":\"batt\",\"volt\":%.2f}\n", battery_voltage);
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -448,6 +475,108 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART4) { // YRM100
+        buffer_yrm100.raw_data[buffer_yrm100.head] = byte_yrm100;
+        buffer_yrm100.head = (buffer_yrm100.head + 1) % RFID_BUFFER_SIZE;
+        HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
+    } else if (huart->Instance == USART1) { // WL-134
+        buffer_wl134.raw_data[buffer_wl134.head] = byte_wl134;
+        buffer_wl134.head = (buffer_wl134.head + 1) % RFID_BUFFER_SIZE;
+        HAL_UART_Receive_IT(&huart1, &byte_wl134, 1);
+    }
+}
+
+void RFID_Process_YRM100(void) {
+    while (buffer_yrm100.head != buffer_yrm100.tail) {
+        if (buffer_yrm100.raw_data[buffer_yrm100.tail] == 0xBB) {
+            uint16_t available = (buffer_yrm100.head + RFID_BUFFER_SIZE - buffer_yrm100.tail) % RFID_BUFFER_SIZE;
+            if (available >= 7) {
+                uint16_t pl = (buffer_yrm100.raw_data[(buffer_yrm100.tail + 3) % RFID_BUFFER_SIZE] << 8) | 
+                             buffer_yrm100.raw_data[(buffer_yrm100.tail + 4) % RFID_BUFFER_SIZE];
+                
+                if (available >= (7 + pl)) {
+                    uint8_t checksum = 0;
+                    for (int i = 1; i < 5 + pl; i++) {
+                        checksum += buffer_yrm100.raw_data[(buffer_yrm100.tail + i) % RFID_BUFFER_SIZE];
+                    }
+                    
+                    if (checksum == buffer_yrm100.raw_data[(buffer_yrm100.tail + 5 + pl) % RFID_BUFFER_SIZE] &&
+                        buffer_yrm100.raw_data[(buffer_yrm100.tail + 6 + pl) % RFID_BUFFER_SIZE] == 0x7E) {
+                        
+                        if (buffer_yrm100.raw_data[(buffer_yrm100.tail + 2) % RFID_BUFFER_SIZE] == 0x22) {
+                            char json[256];
+                            char epc_hex[64] = {0};
+                            for(int i=0; i<pl-3; i++) {
+                                sprintf(epc_hex + strlen(epc_hex), "%02X", 
+                                        buffer_yrm100.raw_data[(buffer_yrm100.tail + 8 + i) % RFID_BUFFER_SIZE]);
+                            }
+                            sprintf(json, "{\"type\":\"rfid\",\"model\":\"YRM100\",\"tag\":\"%s\"}\n", epc_hex);
+                            HAL_UART_Transmit(&huart2, (uint8_t*)json, strlen(json), 100);
+                        }
+                        
+                        buffer_yrm100.tail = (buffer_yrm100.tail + 7 + pl) % RFID_BUFFER_SIZE;
+                        continue;
+                    }
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+        buffer_yrm100.tail = (buffer_yrm100.tail + 1) % RFID_BUFFER_SIZE;
+    }
+}
+
+void RFID_Process_WL134(void) {
+    while (buffer_wl134.head != buffer_wl134.tail) {
+        if (buffer_wl134.raw_data[buffer_wl134.tail] == 0x02) {
+            uint16_t available = (buffer_wl134.head + RFID_BUFFER_SIZE - buffer_wl134.tail) % RFID_BUFFER_SIZE;
+            if (available >= 30) {
+                int end_idx = -1;
+                for (int i=0; i<available; i++) {
+                    if (buffer_wl134.raw_data[(buffer_wl134.tail + i) % RFID_BUFFER_SIZE] == 0x03) {
+                        end_idx = i;
+                        break;
+                    }
+                }
+                
+                if (end_idx != -1) {
+                    char tag_ascii[32] = {0};
+                    for (int i=1; i<end_idx; i++) {
+                        tag_ascii[i-1] = buffer_wl134.raw_data[(buffer_wl134.tail + i) % RFID_BUFFER_SIZE];
+                    }
+                    
+                    char json[128];
+                    sprintf(json, "{\"type\":\"rfid\",\"model\":\"WL134\",\"tag\":\"%s\"}\n", tag_ascii);
+                    HAL_UART_Transmit(&huart2, (uint8_t*)json, strlen(json), 100);
+                    
+                    buffer_wl134.tail = (buffer_wl134.tail + end_idx + 1) % RFID_BUFFER_SIZE;
+                    continue;
+                }
+            } else {
+                return;
+            }
+        }
+        buffer_wl134.tail = (buffer_wl134.tail + 1) % RFID_BUFFER_SIZE;
+    }
+}
+
+void Battery_Read(void) {
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = ADC_CHANNEL_9;
+    sConfig.Rank = ADC_REGULAR_RANK_1;
+    sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
+    HAL_ADC_ConfigChannel(&hadc1, &sConfig);
+    
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+        uint32_t val = HAL_ADC_GetValue(&hadc1);
+        battery_voltage = ((float)val * 3.3f / 4095.0f) * 11.0f;
+    }
+    HAL_ADC_Stop(&hadc1);
+}
 
 /* USER CODE END 4 */
 

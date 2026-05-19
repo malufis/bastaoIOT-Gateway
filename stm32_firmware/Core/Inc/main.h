@@ -59,7 +59,23 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 
 /* USER CODE BEGIN Private defines */
+#define WL134_PWR_PIN GPIO_PIN_4
+#define WL134_PWR_PORT GPIOB
+#define YRM100_PWR_PIN GPIO_PIN_5
+#define YRM100_PWR_PORT GPIOB
 
+#define RFID_BUFFER_SIZE 128
+
+typedef struct {
+    uint8_t raw_data[RFID_BUFFER_SIZE];
+    uint16_t head;
+    uint16_t tail;
+    uint8_t flag_new_data;
+} RFID_Buffer_t;
+
+void RFID_Process_YRM100(void);
+void RFID_Process_WL134(void);
+void Battery_Read(void);
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

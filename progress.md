@@ -270,5 +270,22 @@
   - `esp32_firmware/main/CMakeLists.txt` (modificado)
   - `teste_automatizado/verify_business_enrichment.py` (criado)
 
+### Phase 16 (Refatoração): Reorganização dos Agentes de Desenvolvimento
+- **Status:** complete
+- **Started:** 2026-05-20T18:00:00
+- **Actions taken:**
+  - Unificados os agentes `stm32_agent.md` e `rfid_agent.md` em um único arquivo `stm32_firmware_agent.md`.
+  - Criado o novo agente `testing_agent.md` para cobertura de testes automatizados.
+  - Expandido o agente `c_best_practices_agent.md` com novas regras (header guards, limites de função, complexidade ciclomática, thread safety).
+  - Removidos os arquivos obsoletos `stm32_agent.md` e `rfid_agent.md`.
+  - Atualizada a documentação do projeto (`PROJETO_BASTAO.md`) com a nova estrutura de agentes.
+- **Files created/modified:**
+  - `.agents/stm32_firmware_agent.md` (criado - unificado)
+  - `.agents/testing_agent.md` (criado)
+  - `.agents/c_best_practices_agent.md` (modificado - expandido)
+  - `.agents/stm32_agent.md` (removido)
+  - `.agents/rfid_agent.md` (removido)
+  - `PROJETO_BASTAO.md` (modificado)
+
 
 

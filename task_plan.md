@@ -96,14 +96,22 @@ Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 - [ ] Estender o parser JSON do comando recebido em `bastao/cmd`
 - [ ] Implementar alteração dinâmica de configurações via comandos remotos
 - [ ] Roteamento de comandos de hardware do ESP32 para o STM32 via serial UART
-- **Status:** in_progress
+- **Status:** pending
 
-### Phase 17: Tratamento de Alertas e Sinalizações Locais
+### Phase 17: Refatoração dos Agentes de Desenvolvimento (Concluído)
+- [x] Unificar `stm32_agent.md` e `rfid_agent.md` em `stm32_firmware_agent.md`
+- [x] Criar `testing_agent.md` para testes automatizados
+- [x] Expandir `c_best_practices_agent.md` com novas regras
+- [x] Remover arquivos obsoletos (`stm32_agent.md`, `rfid_agent.md`)
+- [x] Atualizar documentação do projeto (`PROJETO_BASTAO.md`)
+- **Status:** complete
+
+### Phase 18: Tratamento de Alertas e Sinalizações Locais
 - [ ] Implementar medição e envio de bateria no STM32 com alertas de nível crítico (< 15%)
 - [ ] Desenvolver acionamento de feedback sonoro (Buzzer) no STM32 via comandos do ESP32
 - **Status:** pending
 
-### Phase 18: Homologação, Economia de Energia e Testes de Campo
+### Phase 19: Homologação, Economia de Energia e Testes de Campo
 - [ ] Implementar modos de baixo consumo (Sleep Modes) no STM32 e ESP32
 - [ ] Validar testes de estresse em campo de perdas de pacote na rede Mesh com a Tela K10
 - **Status:** pending

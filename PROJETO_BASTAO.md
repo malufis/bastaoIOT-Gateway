@@ -57,7 +57,18 @@ Responsável pela lógica de rede, criptografia e integração com a nuvem.
 - `/docs`: Manuais técnicos e documentação adicional.
 - `.agents/`: Instruções específicas para cada subsistema do projeto.
 
-## 5. Fluxo de Operação
+## 5. Agentes de Desenvolvimento
+O projeto utiliza agentes especializados para manutenção e desenvolvimento:
+
+| Agente | Escopo |
+|--------|--------|
+| `stm32_firmware_agent.md` | Firmware STM32G070CBTx (sensores, RFID, ADC) |
+| `esp32_connectivity_agent.md` | Conectividade ESP32 (Mesh, MQTT, BLE, OTA) |
+| `simcom_7663e_agent.md` | Modem celular SIMCom 7663E (4G, GPS, PPP) |
+| `c_best_practices_agent.md` | Padrões de código C (ESP32 e STM32) |
+| `testing_agent.md` | Testes automatizados e validação |
+
+## 6. Fluxo de Operação
 1. O STM32 ativa a energia dos módulos RFID.
 2. Ao detectar uma tag, o STM32 faz o parsing do UUID e envia para o ESP32 via UART.
 3. O ESP32 empacota a UUID, dados de bateria e localização (GPS) em um JSON.

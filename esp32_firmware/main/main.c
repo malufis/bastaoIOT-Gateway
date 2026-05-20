@@ -27,6 +27,7 @@
 #include "offline_cache.h"
 #include "ota_manager.h"
 #include "wifi_driver.h"
+#include "animal_db.h"
 
 static const char *TAG = "MAIN";
 
@@ -74,8 +75,8 @@ static const mqtt_publisher_config_t default_mqtt_config = {
  */
 static void dispatcher_task(void *pvParameters) {
   stm32_data_t raw_msg;
-  char json_buf[128];
-  char encrypted_hex[320]; // Buffer suficiente para bloco criptografado em hex
+  char json_buf[320];
+  char encrypted_hex[768]; // Buffer suficiente para bloco criptografado em hex
                            // + terminador nulo
 
   ESP_LOGI(TAG, "Task despachante iniciada com sucesso.");
@@ -88,9 +89,17 @@ static void dispatcher_task(void *pvParameters) {
 
       // 1. Reconstrói o JSON correspondente ao tipo de mensagem
       if (raw_msg.type == DATA_TYPE_RFID) {
-        snprintf(json_buf, sizeof(json_buf),
-                 "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\"}",
-                 raw_msg.model, raw_msg.tag);
+        animal_record_t anim_rec;
+        esp_err_t db_err = animal_db_lookup(raw_msg.tag, &anim_rec);
+        if (db_err == ESP_OK) {
+          snprintf(json_buf, sizeof(json_buf),
+                   "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"name\":\"%s\",\"weight\":%.2f,\"lot\":\"%s\"}",
+                   raw_msg.model, raw_msg.tag, anim_rec.name, anim_rec.weight, anim_rec.lot);
+        } else {
+          snprintf(json_buf, sizeof(json_buf),
+                   "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\"}",
+                   raw_msg.model, raw_msg.tag);
+        }
 
         // Notifica o app movel conectado via BLE sobre a nova tag lida
         ble_mobile_notify_tag(json_buf);
@@ -149,6 +158,9 @@ void app_main(void) {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+
+  // 1a. Inicializa o banco de dados de animais local
+  animal_db_init();
 
   // 1b. Inicializa o Cache Offline (SPIFFS) e a tarefa de sincronização
   if (offline_cache_init() == ESP_OK) {

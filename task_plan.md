@@ -4,7 +4,7 @@
 Estruturar o projeto Bastão-ESP, criando a estrutura física de diretórios, documentação de manuais humanos, base de conhecimento de protocolos RFID e perfis de agentes, e implementando o firmware completo dos microcontroladores STM32 e ESP32 com conectividade celular, Wi-Fi, redundância, cache offline, criptografia de dados, suporte a BLE GATT e OTA.
 
 ## Current Phase
-Phase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)
+Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 
 ## Phases
 
@@ -86,17 +86,17 @@ Phase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)
 - **Status:** complete
 
 ### Phase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)
-- [ ] Criar o módulo de banco de dados de animais local `animal_db.c/.h`
-- [ ] Implementar carregamento e consulta sob demanda via `cJSON` a partir da NVS
-- [ ] Integrar no despachante (`dispatcher_task`) do ESP32 para gerar JSON enriquecido
-- [ ] Criar script de teste `teste_automatizado/verify_business_enrichment.py`
-- **Status:** in_progress
+- [x] Criar o módulo de banco de dados de animais local `animal_db.c/.h`
+- [x] Implementar carregamento e consulta sob demanda via `cJSON` a partir da NVS
+- [x] Integrar no despachante (`dispatcher_task`) do ESP32 para gerar JSON enriquecido
+- [x] Criar script de teste `teste_automatizado/verify_business_enrichment.py`
+- **Status:** complete
 
 ### Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 - [ ] Estender o parser JSON do comando recebido em `bastao/cmd`
 - [ ] Implementar alteração dinâmica de configurações via comandos remotos
 - [ ] Roteamento de comandos de hardware do ESP32 para o STM32 via serial UART
-- **Status:** pending
+- **Status:** in_progress
 
 ### Phase 17: Tratamento de Alertas e Sinalizações Locais
 - [ ] Implementar medição e envio de bateria no STM32 com alertas de nível crítico (< 15%)

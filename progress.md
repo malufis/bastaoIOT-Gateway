@@ -228,12 +228,13 @@
   - `esp32_firmware/main/CMakeLists.txt` (modificado)
   - `teste_automatizado/verify_ota.py` (criado)
 
-## Test Results (Phase 12, 13 & 14)
+## Test Results (Phase 12, 13, 14 & 15)
 | Test | Input | Expected | Actual | Status |
 |------|-------|----------|--------|--------|
 | FIFO Cache Sim | 4 eventos de tag/bateria | Salvamento ordenado em arquivos no cache e transmissão FIFO correta após reconexão | Executado com sucesso | OK |
 | OTA JSON CMD | Payload `"cmd":"ota"` | Extração correta da URL e trigger de download | Executado com sucesso | OK |
 | Redundância Rede | Conexão/Desconexão Wi-Fi | Suspensão automática do celular e reativação pelo watchdog | Executado com sucesso | OK |
+| Enriquecimento Negócios | Busca de tag no banco local | JSON enriquecido com nome, peso e lote se cadastrado | Executado com sucesso | OK |
 
 ### Phase 14: Integração de Wi-Fi e Controle de Redundância de Rede
 - **Status:** complete
@@ -252,5 +253,22 @@
   - `esp32_firmware/main/main.c` (modificado)
   - `esp32_firmware/main/CMakeLists.txt` (modificado)
   - `teste_automatizado/verify_redundancy.py` (criado)
+
+### Phase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)
+- **Status:** complete
+- **Started:** 2026-05-20T17:23:00
+- **Actions taken:**
+  - Criado o módulo `animal_db.c/.h` que lê da chave NVS `biz_json` no namespace `bastao_biz` a base de cadastros de animais do curral.
+  - Implementado parseamento e busca sob demanda usando a biblioteca `cJSON` para economizar memória RAM estática do ESP32.
+  - Atualizada a `dispatcher_task` no `main.c` para inicializar o banco de dados no boot, aumentar o tamanho dos buffers de JSON (`json_buf` para 320, `encrypted_hex` para 768) e realizar lookup da tag lida.
+  - Implementado enriquecimento do payload JSON com campos de nome do animal, peso e lote se cadastrado. Mantido payload básico como fallback de segurança.
+  - Criado o script de teste de enriquecimento `teste_automatizado/verify_business_enrichment.py`.
+- **Files created/modified:**
+  - `esp32_firmware/main/animal_db.h` (criado)
+  - `esp32_firmware/main/animal_db.c` (criado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+  - `teste_automatizado/verify_business_enrichment.py` (criado)
+
 
 

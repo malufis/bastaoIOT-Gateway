@@ -28,6 +28,7 @@ O projeto Bastão-ESP é composto por dois microcontroladores operando em conjun
   - **Cache Offline (SPIFFS Spooler):** Armazenamento de payloads em cache local se o MQTT estiver indisponível (limite de 95% de espaço). Descarregamento automático em FIFO em segundo plano assim que a rede volta.
   - **OTA HTTPS Manager:** Rotina de atualização HTTPS utilizando `esp_https_ota` com priorização automática de rede (Wi-Fi local se disponível; senão, dados celulares 4G) e rollback seguro do bootloader.
   - **Wi-Fi STA e Redundância:** Inicialização da interface Wi-Fi STA com conexão fixa (`SSID: bastaoIOT`, `Senha: 3spB@st@0`). Implementação de chaveamento de rota inteligente que suspende a conexão celular PPP do SIMCom 7663E quando o Wi-Fi obtém IP, e a reativa via Watchdog caso o sinal de Wi-Fi caia.
+  - **Banco de Dados de Animais (Local):** Módulo local `animal_db` que carrega a base JSON de negócios da NVS (`biz_json`, namespace `bastao_biz`) e realiza busca linear sob demanda por tag RFID. Enriquece as mensagens do despachante adicionando nome, peso e lote aos JSONs transmitidos se a tag for encontrada.
 
 ### 1.3. Pipeline de Testes e Validação - **Concluído**
 - Scripts de validação em Python (`teste_automatizado/`):
@@ -38,6 +39,7 @@ O projeto Bastão-ESP é composto por dois microcontroladores operando em conjun
   - `verify_offline_cache.py`: Validação da ordenação FIFO do cache SPIFFS.
   - `verify_ota.py`: Validação do recebimento e parsing de comando OTA via MQTT.
   - `verify_redundancy.py`: Validação do chaveamento automático de rede e suspensão celular sob Wi-Fi ativo.
+  - `verify_business_enrichment.py`: Validação do banco de dados de animais local e enriquecimento de telemetrias.
 
 ---
 
@@ -53,12 +55,13 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
   - Adicionado chaveamento de roteamento automático: quando o Wi-Fi obtém IP, o modem celular PPP entra em modo suspenso (via `simcom_ppp_set_suspended(true)`), desligando a interface PPP e impedindo as tentativas de reconexão do watchdog.
   - Quando a rede Wi-Fi é perdida, a suspensão do modem celular é cancelada, permitindo que o watchdog reestabeleça a conexão PPP.
 
-### **Fase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)**
+### **Fase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)** - **Concluído**
 * **Objetivo:** Unificar as tags lidas pelo STM32 com os cadastros locais de animais armazenados na NVS/Flash recebidos via aplicativo mobile.
-* **Tarefas:**
-  - Criar um módulo de banco de dados local na Flash (`animal_db.c/.h`).
-  - Quando o dispatcher receber uma tag RFID, consulta na Flash se há cadastro correspondente (ex: peso, vacinas, lote).
-  - Montar payload enriquecido (ex: contendo o peso associado da tag) para ser enviado à Tela K10 via Mesh ou para o app mobile em tempo real.
+* **Status:** Concluído e validado localmente com scripts de teste.
+* **Tarefas Realizadas:**
+  - Criado o módulo `animal_db.c/.h` que lê do namespace NVS `bastao_biz` a chave `biz_json` contendo o cadastro de animais.
+  - O lookup é feito sob demanda via parsing do JSON com a biblioteca `cJSON` para economizar memória RAM estática.
+  - O orquestrador `main.c` foi alterado para carregar o banco de dados no boot. Na `dispatcher_task`, buffers foram ampliados para evitar estouro e, ao ler um RFID, a tag é consultada na base local. Em caso de correspondência, gera um JSON enriquecido contendo nome do animal, peso e lote associado. Caso contrário, gera o JSON básico (fallback).
 
 ### **Fase 16: Protocolo de Comandos Remotos via MQTT e BLE**
 * **Objetivo:** Permitir controle remoto do hardware a partir do Broker MQTT da nuvem ou do aplicativo mobile.

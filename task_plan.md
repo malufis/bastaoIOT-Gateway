@@ -1,13 +1,10 @@
-# Plan de Tarefas: Implantação e Estruturação do Bastão-ESP
-
-> [!IMPORTANT]
-> O plano de tarefas e o roadmap detalhado do projeto foram unificados no arquivo [ROADMAP.md](file:///d:/git/Bastao/Bast%C3%A3o-ESP/ROADMAP.md). Por favor, consulte este arquivo para acompanhar o andamento do projeto e as próximas fases de implementação.
+# Plano de Tarefas: Implantação e Estruturação do Bastão-ESP
 
 ## Goal
-Estruturar o projeto Bastão-ESP, criando a estrutura física de diretórios (Manual, teste_automatizado, debug, aprendizado), gerando as diretrizes de versionamento Git, documentações técnicas de arquitetura e funcionalidades, base de conhecimento de protocolos RFID e configuração dos perfis de agentes (rfid_agent e stm32_agent).
+Estruturar o projeto Bastão-ESP, criando a estrutura física de diretórios, documentação de manuais humanos, base de conhecimento de protocolos RFID e perfis de agentes, e implementando o firmware completo dos microcontroladores STM32 e ESP32 com conectividade celular, Wi-Fi, redundância, cache offline, criptografia de dados, suporte a BLE GATT e OTA.
 
 ## Current Phase
-Transicionado para o [ROADMAP.md](file:///d:/git/Bastao/Bast%C3%A3o-ESP/ROADMAP.md)
+Phase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)
 
 ## Phases
 
@@ -49,6 +46,68 @@ Transicionado para o [ROADMAP.md](file:///d:/git/Bastao/Bast%C3%A3o-ESP/ROADMAP.
 - [x] Adicionar detalhes de armazenamento offline e sincronização posterior em `Manual/funcionalidades.md`
 - **Status:** complete
 
+### Phase 9: Criptografia de Payload e Despachante ESP32
+- [x] Criar o módulo `secure_payload.c/.h` com criptografia AES-256-CBC
+- [x] Criar o esqueleto do módulo `mesh_coordinator.c/.h` para rede BLE Mesh
+- [x] Implementar a tarefa despachante (`dispatcher_task`) no `main.c` do ESP32
+- [x] Adicionar script de teste `teste_automatizado/verify_encryption.py`
+- **Status:** complete
+
+### Phase 10: SIMCom 7663E -- Driver Celular PPP + MQTT
+- [x] Criar o módulo `simcom_ppp.c/.h` com comandos AT, PPP e watchdog celular
+- [x] Criar o módulo `mqtt_publisher.c/.h` com cliente MQTT nativo
+- [x] Criar script de teste `teste_automatizado/verify_mqtt_payload.py`
+- **Status:** complete
+
+### Phase 11: Bluetooth Mobile -- GATT Server para App de Celular
+- [x] Criar o módulo `ble_mobile.c/.h` com GATT Server e UUIDs customizados
+- [x] Implementar persistência NVS para configurações e dados de negócio
+- [x] Criar script de teste `teste_automatizado/verify_ble_gatt.py`
+- **Status:** complete
+
+### Phase 12: Sistema de Cache de Dados Offline (SPIFFS FIFO)
+- [x] Criar o módulo `offline_cache.c/.h` com montagem SPIFFS e limites de segurança
+- [x] Desenvolver a fila FIFO baseada em arquivos sequenciais na Flash local
+- [x] Implementar a tarefa de sincronização automática e descarte de cache pós-ACK MQTT
+- [x] Criar script de teste `teste_automatizado/verify_offline_cache.py`
+- **Status:** complete
+
+### Phase 13: Rotina de Atualização de Firmware Remota (OTA HTTPS)
+- [x] Criar o módulo `ota_manager.c/.h` com `esp_https_ota` e rollback seguro
+- [x] Implementar inscrição e tratamento de comandos MQTT no tópico `bastao/cmd`
+- [x] Criar script de teste `teste_automatizado/verify_ota.py`
+- **Status:** complete
+
+### Phase 14: Integração de Wi-Fi e Controle de Redundância de Rede
+- [x] Criar o módulo `wifi_driver.c/.h` para Wi-Fi Station
+- [x] Implementar lógica de suspensão do modem celular PPP (`simcom_ppp_set_suspended`)
+- [x] Integrar comutador automático de rota: suspende celular no Wi-Fi IP, reativa quando Wi-Fi cai
+- [x] Criar script de teste `teste_automatizado/verify_redundancy.py`
+- **Status:** complete
+
+### Phase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)
+- [ ] Criar o módulo de banco de dados de animais local `animal_db.c/.h`
+- [ ] Implementar carregamento e consulta sob demanda via `cJSON` a partir da NVS
+- [ ] Integrar no despachante (`dispatcher_task`) do ESP32 para gerar JSON enriquecido
+- [ ] Criar script de teste `teste_automatizado/verify_business_enrichment.py`
+- **Status:** in_progress
+
+### Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
+- [ ] Estender o parser JSON do comando recebido em `bastao/cmd`
+- [ ] Implementar alteração dinâmica de configurações via comandos remotos
+- [ ] Roteamento de comandos de hardware do ESP32 para o STM32 via serial UART
+- **Status:** pending
+
+### Phase 17: Tratamento de Alertas e Sinalizações Locais
+- [ ] Implementar medição e envio de bateria no STM32 com alertas de nível crítico (< 15%)
+- [ ] Desenvolver acionamento de feedback sonoro (Buzzer) no STM32 via comandos do ESP32
+- **Status:** pending
+
+### Phase 18: Homologação, Economia de Energia e Testes de Campo
+- [ ] Implementar modos de baixo consumo (Sleep Modes) no STM32 e ESP32
+- [ ] Validar testes de estresse em campo de perdas de pacote na rede Mesh com a Tela K10
+- **Status:** pending
+
 ## Key Questions
 1. Como o STM32 envia a leitura de bateria? (JSON via UART2)
 2. Qual a pinagem exata e a configuração serial de cada leitor? (YRM100: USART4 PA0/PA1 115200 8N1; WL-134: USART3 PA5/PB0 9600 8N2)
@@ -56,13 +115,14 @@ Transicionado para o [ROADMAP.md](file:///d:/git/Bastao/Bast%C3%A3o-ESP/ROADMAP.
 ## Decisions Made
 | Decision | Rationale |
 |----------|-----------|
-| Abordagem 1 | Separação física clara entre documentação humana (Manual/) e base de conhecimento para agentes (aprendizado/) |
+| Banco de Dados NVS | Dados de negócios (Farm/Lot/Animal) persistidos na NVS com busca em array JSON dinâmico sob demanda para economizar RAM |
+| Redundância de Rede | Conexão de dados Wi-Fi STA priorizada sobre celular PPP para economizar custos e consumo. Suspensão celular automática enquanto Wi-Fi possui IP válido. |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-|       | 1       |            |
+| Falha build idf.py local | 1 | Comando idf.py indisponível no path do sistema local. Validação lógica feita com simuladores Python. |
 
 ## Notes
-- Atualizar o status de cada fase conforme avançar.
-- Registrar erros no log de erros.
+- Atualizar o status de cada fase conforme avançar no desenvolvimento.
+- Manter o checklist de tarefas atualizado para acompanhamento no Git.

@@ -109,11 +109,128 @@
 |-----------|-------|---------|------------|
 | 2026-05-19T10:45 | Error invalid tool call (IsArtifact fora do cérebro) | 1 | Substituição por IsArtifact = false e escrita normal de arquivo |
 
+## Session: 2026-05-20
+
+### Phase 9: Criptografia de Payload e Despachante ESP32
+- **Status:** complete
+- **Started:** 2026-05-20T12:53:00
+- Actions taken:
+  - Criado o módulo `secure_payload.c/.h` implementando criptografia simétrica AES-256-CBC com padding PKCS#7 via `mbedtls` no ESP32.
+  - Criado o esqueleto do módulo `mesh_coordinator.c/.h` para a inicialização e envio de dados criptografados pela rede BLE Mesh do ESP32.
+  - Atualizado o orquestrador `main.c` com a inicialização do NVS Flash, módulo de segurança, módulo Mesh, e com a tarefa despachante (`dispatcher_task`) que consome a fila UART do STM32, formata os JSONs, realiza a criptografia e envia pela rede.
+  - Atualizado o arquivo `CMakeLists.txt` do ESP32 para incluir os novos arquivos de código-fonte.
+  - Adicionado o script de teste criptográfico `teste_automatizado/verify_encryption.py` utilizando `pycryptodomex` para certificar a compatibilidade dos payloads criptografados.
+- Files created/modified:
+  - `esp32_firmware/main/secure_payload.h` (criado)
+  - `esp32_firmware/main/secure_payload.c` (criado)
+  - `esp32_firmware/main/mesh_coordinator.h` (criado)
+  - `esp32_firmware/main/mesh_coordinator.c` (criado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+  - `teste_automatizado/verify_encryption.py` (criado)
+  - `findings.md` (modificado)
+
+## Test Results
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| Teste de Decodificação RFID | Frames brutos de YRM100 e WL-134 | EPCs decodificados e convertidos corretamente para decimais | Todos decodificados conforme especificação | ✓ |
+| Teste de Criptografia AES | Strings JSON estruturadas | Payload criptografado hex compatível com padrão decifrável no receptor | Sucesso na cifragem e decifração de teste | ✓ |
+
 ## 5-Question Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Finalizado |
-| Where am I going? | Nenhuma - Ajustes de documentação de Cache Offline concluídos |
-| What's the goal? | Estruturar o projeto, criar manuais técnicos humanos, bases de aprendizado IA, testes e debug. |
+| Where am I? | Finalizado modulo BLE Mobile GATT Server no ESP32 |
+| Where am I going? | Implementar Task OTA Manager (atualizacao remota de firmware) |
+| What's the goal? | Garantir a transmissao fim a fim (local via Mesh e remota via Celular) criptografada, com sincronizacao bidirecional via app |
 | What have I learned? | Ver detalhes em findings.md |
-| What have I done? | Concluí toda a estruturação de pastas físicas, manuais, perfis de agentes, README, Bluetooth, OTA e Cache Offline. |
+| What have I done? | Concluí o modulo ble_mobile com GATT Server seguro, config/business write, tag notify, status read e NVS. |
+
+### Phase 10: SIMCom 7663E -- Driver Celular PPP + MQTT
+- **Status:** complete
+- **Started:** 2026-05-20T13:08:00
+- Actions taken:
+  - Criado o modulo `simcom_ppp.c/.h` com engine de comandos AT, ativacao PPP via ESP-NETIF, leitura GPS/GLONASS e watchdog de reconexao.
+  - Criado o modulo `mqtt_publisher.c/.h` com cliente MQTT nativo do ESP-IDF, fila dedicada de publicacao e task consumidora assincrona.
+  - Atualizado o orquestrador `main.c` com a inicializacao do modem SIMCom, PPP, cliente MQTT e roteamento paralelo de dados (BLE Mesh + MQTT).
+  - Adicionadas configuracoes padrao de APN (Vivo) e broker MQTT como constantes de compilacao.
+  - Criado o teste `verify_mqtt_payload.py` simulando o pipeline fim a fim com 5 payloads (RFID, bateria e GPS).
+- Files created/modified:
+  - `esp32_firmware/main/simcom_ppp.h` (criado)
+  - `esp32_firmware/main/simcom_ppp.c` (criado)
+  - `esp32_firmware/main/mqtt_publisher.h` (criado)
+  - `esp32_firmware/main/mqtt_publisher.c` (criado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+  - `teste_automatizado/verify_mqtt_payload.py` (criado)
+
+## Test Results (Phase 10)
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| Pipeline MQTT RFID YRM100 | JSON cifrado via AES-256-CBC | Decifravel com integridade | Sucesso | OK |
+| Pipeline MQTT RFID WL134 | JSON cifrado via AES-256-CBC | Decifravel com integridade | Sucesso | OK |
+| Pipeline MQTT Bateria | JSON cifrado via AES-256-CBC | Decifravel com integridade | Sucesso | OK |
+| Pipeline MQTT GPS | JSON cifrado via AES-256-CBC | Decifravel com integridade | Sucesso | OK |
+
+### Phase 11: Bluetooth Mobile -- GATT Server para App de Celular
+- **Status:** complete
+- **Started:** 2026-05-20T13:24:00
+- Actions taken:
+  - Criado o modulo `ble_mobile.c/.h` com servidor GATT seguro (pareamento MITM + criptografia).
+  - Definidos UUIDs customizados para servico (0x00FF) e 5 caracteristicas (0xFF01-0xFF05).
+  - Implementado handler de escrita para configuracao (potencia YRM100, tempo varredura, on/off leitores).
+  - Implementado handler de escrita para dados de negocio (Fazenda, Lote, Animal) com persistencia NVS.
+  - Implementada notificacao BLE em tempo real de tags lidas ao app conectado.
+  - Implementada leitura de status do dispositivo (bateria, PPP, MQTT, Mesh, GPS, contagem de tags).
+  - Integrado no dispatcher_task para notificar tag reads e atualizar bateria no status global.
+  - Main loop atualizado para refresh periodico do status do dispositivo.
+- Files created/modified:
+  - `esp32_firmware/main/ble_mobile.h` (criado)
+  - `esp32_firmware/main/ble_mobile.c` (criado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+  - `teste_automatizado/verify_ble_gatt.py` (criado)
+
+## Test Results (Phase 11)
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| UUID Uniqueness | 6 UUIDs GATT | Todos unicos | Todos unicos | OK |
+| Config Write Payload | JSON config (111-113 bytes) | Formato valido < 512 bytes | Validado | OK |
+| Business Data Payload | JSON farm/lot/animal (107-187 bytes) | Formato valido < 512 bytes | Validado | OK |
+| Last Tag Notify | JSON tag RFID (55-65 bytes) | Formato valido com model+tag | Validado | OK |
+| Device Status Read | JSON status (90-102 bytes) | Formato valido com todos campos | Validado | OK |
+
+### Phase 12: Sistema de Cache de Dados Offline
+- **Status:** complete
+- **Started:** 2026-05-20T16:26:00
+- **Actions taken:**
+  - Criado o módulo `offline_cache.c/.h` com controle de capacidade (limite 95%), indexação sequencial persistida via SPIFFS e tarefa FreeRTOS de sincronização em background.
+  - Integrado na tarefa despachante do `main.c` para salvar payloads criptografados no cache se falhar a entrega local/nuvem.
+  - Modificado o `mqtt_publisher.c` para desviar mensagens destinadas à nuvem para o cache local caso o broker caia ou falhe a postagem.
+- **Files created/modified:**
+  - `esp32_firmware/main/offline_cache.h` (criado)
+  - `esp32_firmware/main/offline_cache.c` (criado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/mqtt_publisher.c` (modificado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+  - `teste_automatizado/verify_offline_cache.py` (criado)
+
+### Phase 13: Rotina de Atualização de Firmware Remota (OTA)
+- **Status:** complete
+- **Started:** 2026-05-20T16:27:00
+- **Actions taken:**
+  - Criado o módulo `ota_manager.c/.h` integrando o componente `esp_https_ota` com lógica de verificação pós-boot e cancelamento automático de rollback se estável.
+  - Implementada a seleção e priorização da interface de rede (Wi-Fi local priorizado sobre celular PPP 4G).
+  - Adicionado o tratamento de comando JSON MQTT `{"cmd":"ota","url":"..."}` para acionar a atualização de firmware OTA.
+- **Files created/modified:**
+  - `esp32_firmware/main/ota_manager.h` (criado)
+  - `esp32_firmware/main/ota_manager.c` (criado)
+  - `esp32_firmware/main/mqtt_publisher.c` (modificado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+  - `teste_automatizado/verify_ota.py` (criado)
+
+## Test Results (Phase 12 & 13)
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| FIFO Cache Sim | 4 eventos de tag/bateria | Salvamento ordenado em arquivos no cache e transmissão FIFO correta após reconexão | Executado com sucesso | OK |
+| OTA JSON CMD | Payload `"cmd":"ota"` | Extração correta da URL e trigger de download | Executado com sucesso | OK |
+

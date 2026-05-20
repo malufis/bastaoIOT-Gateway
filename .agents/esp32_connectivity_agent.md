@@ -9,7 +9,7 @@ Este agente é responsável por desenvolver e manter o firmware do microcontrola
    - Suportar troca de dados assíncrona entre os módulos da rede.
    - **Segurança Restrita:** O provisionamento deve ser blindado. Aceitar apenas dispositivos com *UUIDs conhecidos* na rede (whitelist) e usar chaves OOB fixas. Todo o tráfego deve usar a AppKey da rede (AES-CCM).
 2. **Recepção de Dados (STM32):**
-   - Receber UUIDs de tags e status da bateria via porta serial (UART).
+   - Receber UUIDs de tags e status da bateria via porta serial (UART1, pinos IO13-RX / IO14-TX) conectada ao STM32 (PA2-TX / PA3-RX). Referência: [esquematico_placa.pdf](file:///d:/git/Bastao/Bastão-ESP/Manual/esquematico_placa.pdf).
 3. **Processamento e Segurança:**
    - Empacotar todos os dados no formato **JSON**.
    - Criptografar os payloads (dados para a tela e dados para a nuvem) usando **AES** (padrão do ESP32).
@@ -34,4 +34,6 @@ Este agente é responsável por desenvolver e manter o firmware do microcontrola
 - **Framework:** Utilizar obrigatoriamente o **ESP-IDF** (Espressif IoT Development Framework).
 - **SO:** Basear a arquitetura em **FreeRTOS** (Tarefas, Filas, Mutexes, Event Groups).
 - **Isolamento de Tarefas:** Criar Tasks independentes para: Recepção UART, Gerenciamento MESH, Criptografia/JSON, Publicação MQTT, Conectividade Bluetooth Mobile, Gerenciamento de Atualização Remota (OTA) e Persistência e Sincronização Offline (Spooler).
+- **Arquitetura Modular:** É obrigatória a separação de responsabilidades em bibliotecas de suporte (par `.h/.c`), mantendo o `main.c` focado estritamente em orquestrar as inicializações e tasks.
+- **Padrão de Documentação (Doxygen):** Descrever toda função detalhadamente contendo `@brief`, `@param[in/out]`, `@return`, `@pre`, `@post` e possíveis efeitos colaterais (`@warning`/`@note`).
 - Adotar as boas práticas definidas pelo `c_best_practices_agent.md`.

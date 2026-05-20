@@ -11,7 +11,7 @@ O firmware do STM32G070CBTx gerencia a leitura assíncrona dos sensores usando u
 ### 1.1. Callback de Interrupção de Recepção UART (`HAL_UART_RxCpltCallback`)
 * **Objetivo:** Capturar caracteres da serial em tempo real sem bloquear a execução do sistema.
 * **Funcionamento:**
-  1. A interrupção é acionada toda vez que 1 byte é recebido via USART1 (WL-134) ou USART4 (YRM100).
+  1. A interrupção é acionada toda vez que 1 byte é recebido via USART3 (WL-134) ou USART4 (YRM100).
   2. Identifica qual porta gerou a interrupção.
   3. Insere o byte no buffer circular correspondente (`buffer_wl134` ou `buffer_yrm100`) na posição apontada pelo ponteiro `head`.
   4. Incrementa o ponteiro `head` usando módulo (`head = (head + 1) % RFID_BUFFER_SIZE`) para evitar transbordamento.

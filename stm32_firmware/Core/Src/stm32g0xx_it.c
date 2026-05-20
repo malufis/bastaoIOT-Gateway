@@ -141,5 +141,15 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+extern UART_HandleTypeDef huart3;
+extern UART_HandleTypeDef huart4;
 
+/**
+  * @brief This function handles USART3 + USART4 + LPUART1 global interrupt.
+  */
+void USART3_4_LPUART1_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart3);
+  HAL_UART_IRQHandler(&huart4);
+}
 /* USER CODE END 1 */

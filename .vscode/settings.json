@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "D:/git/Bastao/Bastão-ESP/esp32_firmware"
+    "cmake.sourceDirectory": "D:/git/Bastao/Bastão-ESP/esp32_firmware",
+    "idf.currentSetup": "C:/Espressif/frameworks/esp-idf-v5.5.2/"
 }

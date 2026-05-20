@@ -1,10 +1,13 @@
 # Plan de Tarefas: Implantação e Estruturação do Bastão-ESP
 
+> [!IMPORTANT]
+> O plano de tarefas e o roadmap detalhado do projeto foram unificados no arquivo [ROADMAP.md](file:///d:/git/Bastao/Bast%C3%A3o-ESP/ROADMAP.md). Por favor, consulte este arquivo para acompanhar o andamento do projeto e as próximas fases de implementação.
+
 ## Goal
 Estruturar o projeto Bastão-ESP, criando a estrutura física de diretórios (Manual, teste_automatizado, debug, aprendizado), gerando as diretrizes de versionamento Git, documentações técnicas de arquitetura e funcionalidades, base de conhecimento de protocolos RFID e configuração dos perfis de agentes (rfid_agent e stm32_agent).
 
 ## Current Phase
-Finalizado
+Transicionado para o [ROADMAP.md](file:///d:/git/Bastao/Bast%C3%A3o-ESP/ROADMAP.md)
 
 ## Phases
 
@@ -48,7 +51,7 @@ Finalizado
 
 ## Key Questions
 1. Como o STM32 envia a leitura de bateria? (JSON via UART2)
-2. Qual a pinagem exata e a configuração serial de cada leitor? (YRM100: USART4 PA0/PA1 115200 8N1; WL-134: USART1 PA9/PA10 9600 8N2)
+2. Qual a pinagem exata e a configuração serial de cada leitor? (YRM100: USART4 PA0/PA1 115200 8N1; WL-134: USART3 PA5/PB0 9600 8N2)
 
 ## Decisions Made
 | Decision | Rationale |

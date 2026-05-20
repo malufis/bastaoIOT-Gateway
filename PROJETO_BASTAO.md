@@ -9,7 +9,8 @@ Este projeto consiste em um sistema de sensoriamento e conectividade baseado em 
 Responsável por toda a interface física com os sensores e gerenciamento de energia.
 - **Microcontrolador:** STM32G070CBTx.
 - **Periféricos:**
-  - **USART1 (PA9/PA10):** Interface com Leitor RFID WL-134 (9600 bps, 8N2).
+  - **USART3 (PA5/PB0):** Interface com Leitor RFID WL-134 (9600 bps, 8N2).
+  - **USART1 (PA9/PA10):** Não Utilizada / Reservada.
   - **USART2 (PA2/PA3):** Interface de comunicação com o ESP32 (UART TTL).
   - **USART4 (PA0/PA1):** Interface com Leitor RFID YRM100 (115200 bps, 8N1).
   - **ADC1 (PB1/IN9):** Monitoramento de tensão da bateria (Divisor resistivo: R1=100k, R2=10k).
@@ -25,6 +26,7 @@ Responsável pela lógica de rede, criptografia e integração com a nuvem.
   - **Segurança:** Provisionamento fechado via Whitelist de UUIDs e chaves OOB fixas.
 - **Conectividade Nuvem:** SIMCom 7663E (4G/LTE + GPS).
   - **Interface:** UART (Pinos 17 e 18).
+- **Interface com STM32:** UART (IO13-RX / IO14-TX) conectada à USART2 (PA2-TX / PA3-RX) do STM32. Conforme o esquema [esquematico_placa.pdf](file:///d:/git/Bastao/Bastão-ESP/Manual/esquematico_placa.pdf).
   - **Protocolo de Rede:** PPP (Point-to-Point Protocol) para ativação de dados.
   - **Aplicação:** Cliente MQTT operando sobre a pilha PPP.
 - **Localização:** GPS/GLONASS via SIMCom 7663E.

@@ -17,7 +17,7 @@ Este agente é responsável por desenvolver e manter o firmware associado aos le
   * Consultar detalhes matemáticos e exemplos em: [rfid_protocols.md](file:///d:/git/Bastao/Bastão-ESP/aprendizado/rfid_protocols.md#2-módulo-leitor-rfid-yrm100-ultra-high-frequency---uhf).
 
 ### 1.2. Integração com o Leitor RFID WL-134 (LF 134.2 KHz)
-* **Conexão Física**: USART1 (Pinos PA9-TX / PA10-RX).
+* **Conexão Física**: USART3 (Pinos PA5-TX / PB0-RX).
 * **Parâmetros Serial**: 9600 bps, 8 data bits, no parity, 2 stop bits (**8N2**).
 * **Alimentação**: Controlada via pino **PB4** (Alto = Ligado, Baixo = Desligado).
 * **Tratamento de Protocolo**:

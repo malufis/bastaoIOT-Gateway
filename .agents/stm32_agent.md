@@ -8,9 +8,11 @@ Este agente é responsável por desenvolver, revisar e dar manutenção no firmw
 
 Ao atuar neste projeto, o agente deve garantir a correta configuração dos seguintes recursos:
 
-* **USART1 (PA9/PA10)**:
+* **USART3 (PA5/PB0)**:
   * Conectado ao leitor de tag animal WL-134.
   * Configuração: **9600 bps, 8 data bits, no parity, 2 stop bits (8N2)**.
+* **USART1 (PA9/PA10)**:
+  * Não utilizada / Reservada.
 * **USART4 (PA0/PA1)**:
   * Conectado ao leitor de tag UHF YRM100.
   * Configuração: **115200 bps, 8 data bits, no parity, 1 stop bit (8N1)**.
@@ -31,7 +33,7 @@ Ao atuar neste projeto, o agente deve garantir a correta configuração dos segu
 
 * **Não Bloqueante (Non-blocking)**: O loop principal do sistema não deve conter delays (`HAL_Delay`) que afetem o tempo de resposta ou a amostragem de dados das seriais.
 * **UART por Interrupção / DMA**:
-  * Implementar obrigatoriamente a recepção de bytes nas portas USART1 e USART4 por interrupção (`HAL_UART_RxCpltCallback`) ou DMA circular.
+  * Implementar obrigatoriamente a recepção de bytes nas portas USART3 e USART4 por interrupção (`HAL_UART_RxCpltCallback`) ou DMA circular.
   * Armazenar os dados em estruturas de buffer circular (`RFID_Buffer_t`) seguras contra condições de corrida (race conditions).
 * **Filtro do ADC de Bateria**:
   * As leituras da bateria no pino PB1 devem passar por um filtro digital de média móvel (mínimo de 8 amostras) para atenuar variações rápidas provocadas por picos de consumo dos módulos RFID.
@@ -45,9 +47,11 @@ Ao atuar neste projeto, o agente deve garantir a correta configuração dos segu
 
 ---
 
-## 3. Diretrizes de Codificação em C
+## 3. Diretrizes de Codificação em C e Arquitetura
 
 * Adotar as boas práticas definidas pelo `c_best_practices_agent.md`.
+* **Arquitetura Modular:** Todo novo processamento de sensores, lógica de filtragem ou controle deve ser implementado em arquivos `.h/.c` específicos de biblioteca (princípio de "dividir para conquistar"), mantendo o `main.c` focado estritamente em orquestração de chamadas.
+* **Documentação de Funções (Doxygen):** Todas as funções (públicas e locais) devem possuir bloco de cabeçalho descrevendo `@brief`, `@param[in/out]`, `@return`, `@pre`, `@post` e `@warning` para efeitos colaterais.
 * Utilizar o HAL da STMicroelectronics (`stm32g0xx_hal.h`).
 * Organizar as funções de inicialização geradas pelo STM32CubeMX mantendo o código customizado estritamente dentro das tags `/* USER CODE BEGIN ... */` e `/* USER CODE END ... */`.
 * Comentar de forma clara a lógica de tratamento de ponteiros `head` e `tail` do buffer circular.

@@ -76,6 +76,8 @@ typedef struct {
 void RFID_Process_YRM100(void);
 void RFID_Process_WL134(void);
 void Battery_Read(void);
+void reverse_str(char* str, int len);
+uint64_t hex_to_uint64(const char* hex_str);
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

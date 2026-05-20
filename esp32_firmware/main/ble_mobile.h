@@ -22,6 +22,8 @@
 extern "C" {
 #endif
 
+#include "simcom_ppp.h"
+
 /* --- Definicoes de UUIDs do Servico GATT --- */
 
 /**
@@ -35,6 +37,8 @@ extern "C" {
 #define CHAR_BUSINESS_WRITE_UUID   0xFF03  /**< Dados de negocio (app -> bastao) */
 #define CHAR_LAST_TAG_UUID         0xFF04  /**< Ultima tag lida (notify -> app) */
 #define CHAR_DEVICE_STATUS_UUID    0xFF05  /**< Status do dispositivo (read) */
+#define CHAR_CELLULAR_STATUS_UUID  0xFF06  /**< Status celular (read/notify) */
+#define CHAR_LOGGER_UUID           0xFF07  /**< Log de debug (write/read) */
 
 /* --- Tamanhos de Buffer --- */
 
@@ -46,13 +50,27 @@ extern "C" {
 
 /* --- Chaves NVS para Persistencia --- */
 
-#define NVS_NAMESPACE_CONFIG       "bastao_cfg"   /**< Namespace NVS para config */
-#define NVS_NAMESPACE_BUSINESS     "bastao_biz"   /**< Namespace NVS para negocio */
-#define NVS_KEY_FARM               "farm_data"    /**< Dados da Fazenda */
-#define NVS_KEY_LOT                "lot_data"     /**< Dados do Lote */
-#define NVS_KEY_ANIMAL             "animal_data"  /**< Dados do Animal */
-#define NVS_KEY_YRM100_POWER       "yrm_power"    /**< Potencia do YRM100 */
-#define NVS_KEY_SCAN_TIME          "scan_time"    /**< Tempo de varredura */
+#define NVS_NAMESPACE_CONFIG       "bastao_cfg"
+#define NVS_NAMESPACE_BUSINESS   "bastao_biz"
+#define NVS_KEY_FARM             "farm_data"
+#define NVS_KEY_LOT              "lot_data"
+#define NVS_KEY_ANIMAL           "animal_data"
+#define NVS_KEY_YRM100_POWER     "yrm_power"
+#define NVS_KEY_SCAN_TIME        "scan_time"
+#define NVS_KEY_WIFI_SSID        "wifi_ssid"
+#define NVS_KEY_WIFI_PASSWORD    "wifi_pass"
+#define NVS_KEY_WIFI_ENABLED     "wifi_en"
+#define NVS_KEY_APN              "apn"
+#define NVS_KEY_APN_USER         "apn_user"
+#define NVS_KEY_APN_PASSWORD     "apn_pass"
+#define NVS_KEY_CELLULAR_ENABLED "cell_en"
+#define NVS_KEY_MQTT_URI         "mqtt_uri"
+#define NVS_KEY_MQTT_CLIENT_ID   "mqtt_client"
+#define NVS_KEY_MQTT_TOPIC_TELE   "mqtt_tele"
+#define NVS_KEY_MQTT_TOPIC_GPS    "mqtt_gps"
+#define NVS_KEY_NETWORK_MODE     "net_mode"
+#define NVS_KEY_BIZ_JSON         "biz_json"
+#define NVS_KEY_CFG_JSON        "cfg_json"
 
 /* --- Estruturas de Dados --- */
 
@@ -71,15 +89,68 @@ typedef struct {
  * @brief Estrutura representando o status atual do dispositivo.
  */
 typedef struct {
-    float battery_voltage;   /**< Tensao da bateria em Volts */
-    bool ppp_connected;      /**< Status da conexao celular PPP */
-    bool mqtt_connected;     /**< Status da conexao MQTT */
-    bool mesh_active;        /**< Status da rede BLE Mesh */
-    bool gps_fix;            /**< Status do fix GPS */
-    double gps_latitude;     /**< Latitude GPS (se disponivel) */
-    double gps_longitude;    /**< Longitude GPS (se disponivel) */
-    uint32_t tags_read_count;/**< Contador total de tags lidas na sessao */
+    float battery_voltage;
+    bool ppp_connected;
+    bool mqtt_connected;
+    bool mesh_active;
+    bool gps_fix;
+    double gps_latitude;
+    double gps_longitude;
+    uint32_t tags_read_count;
+    uint8_t movement_detected;
+    float accel_x;
+    float accel_y;
+    float accel_z;
 } bastao_device_status_t;
+
+/**
+ * @brief Modo de conectividade de rede do dispositivo.
+ */
+typedef enum {
+    NETWORK_MODE_WIFI_ONLY = 0,
+    NETWORK_MODE_CELLULAR_ONLY = 1,
+    NETWORK_MODE_WIFI_CELLULAR = 2,
+    NETWORK_MODE_AUTO = 3
+} network_mode_t;
+
+/**
+ * @brief Estrutura de configuracao de Wi-Fi.
+ */
+typedef struct {
+    char ssid[32];
+    char password[64];
+    bool enabled;
+} wifi_config_t;
+
+/**
+ * @brief Estrutura de configuracao de APN celular.
+ */
+typedef struct {
+    char apn[64];
+    char user[32];
+    char password[32];
+    bool enabled;
+} cellular_config_t;
+
+/**
+ * @brief Estrutura de configuracao MQTT.
+ */
+typedef struct {
+    char broker_uri[128];
+    char client_id[32];
+    char topic_telemetry[64];
+    char topic_gps[64];
+} mqtt_config_t;
+
+/**
+ * @brief Estrutura completa de configuracao de rede.
+ */
+typedef struct {
+    wifi_config_t wifi;
+    cellular_config_t cellular;
+    mqtt_config_t mqtt;
+    network_mode_t mode;
+} network_config_t;
 
 /* --- Variaveis Globais --- */
 
@@ -97,6 +168,11 @@ extern bastao_device_status_t bastao_current_status;
  * @brief Buffer da ultima tag lida para notificacao via BLE.
  */
 extern char ble_last_tag_json[BLE_MOBILE_ATTR_MAX_LEN];
+
+/**
+ * @brief Configuracao de rede atual (Wi-Fi, Celular, MQTT).
+ */
+extern network_config_t bastao_network_config;
 
 /* --- Funcoes de Interface Publica --- */
 
@@ -154,6 +230,64 @@ esp_err_t ble_mobile_load_config_from_nvs(void);
  * @return true se um app esta conectado ao GATT Server.
  */
 bool ble_mobile_is_connected(void);
+
+/**
+ * @brief Carrega a configuracao de rede do NVS.
+ * @return ESP_OK se carregou, ESP_ERR_NOT_FOUND se usar defaults.
+ */
+esp_err_t ble_mobile_load_network_config(void);
+
+/**
+ * @brief Salva a configuracao de rede no NVS.
+ * @param config Ponteiro para a configuracao.
+ * @return ESP_OK se salvou com sucesso.
+ */
+esp_err_t ble_mobile_save_network_config(const network_config_t *config);
+
+/**
+ * @brief Processa JSON de configuracao de rede recebido do app.
+ * @param json String JSON com campos de configuracao.
+ * @return ESP_OK se processou com sucesso.
+ */
+esp_err_t ble_mobile_process_network_json(const char *json);
+
+/**
+ * @brief Aplica a configuracao de rede (reiniciei componentes).
+ * @details Chamada apos salvar nova configuracao para aplicar
+ *          as alteracoes (reconectar Wi-Fi, MQTT, etc).
+ * @return ESP_OK se aplicou com sucesso.
+ */
+esp_err_t ble_mobile_apply_network_config(void);
+
+/**
+ * @brief Envia notificacao do status celular ao app conectado.
+ * @details Usada para reportar RSSI, tecnologia, operador em tempo real.
+ *
+ * @return ESP_OK se a notificacao foi enviada ou nao havia cliente conectado.
+ */
+esp_err_t ble_mobile_notify_cellular_status(void);
+
+/**
+ * @brief Envia mensagem de log via BLE para o app conectado.
+ *
+ * @param[in] log_str String de log formatada.
+ * @return ESP_OK se a notificacao foi enviada.
+ */
+esp_err_t ble_mobile_notify_log(const char *log_str);
+
+/**
+ * @brief Habilita/desabilita o logging via BLE.
+ *
+ * @param[in] enable true para habilitar.
+ */
+void ble_mobile_log_enable(bool enable);
+
+/**
+ * @brief Verifica se o logging BLE esta ativo.
+ *
+ * @return true se logging BLE esta ativo.
+ */
+bool ble_mobile_log_is_enabled(void);
 
 #ifdef __cplusplus
 }

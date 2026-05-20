@@ -287,5 +287,48 @@
   - `.agents/rfid_agent.md` (removido)
   - `PROJETO_BASTAO.md` (modificado)
 
+### Phase 18: Tratamento de Alertas e Sinalizações Locais
+- **Status:** complete
+- **Started:** 2026-05-20T18:30:00
+- **Actions taken:**
+  - Criado o módulo `alerts.c/.h` no STM32 com detecção de bateria crítica (< 8.4V) e baixa (< 9.6V).
+  - Implementado o parser de comandos JSON recebidos do ESP32 (buzzer, rfid_on/off, yrm_power, wl_power).
+  - Implementado o driver de buzzer com padrões: short (100ms), long (500ms), double (150ms+100ms+150ms).
+  - Adicionado pino PB6 para controle do buzzer no STM32.
+  - Criado o módulo `stm32_cmd.c/.h` no ESP32 para envio de comandos ao STM32.
+  - Modificada a `dispatcher_task` no ESP32 para enviar comando de buzzer short ao ler RFID e buzzer long quando bateria < 9.0V.
+  - Atualizado o `stm32_uart.c` com função `stm32_uart_send_string` para envio de dados ao STM32.
+- **Files created/modified:**
+  - `stm32_firmware/Core/Inc/alerts.h` (criado)
+  - `stm32_firmware/Core/Src/alerts.c` (criado)
+  - `stm32_firmware/Core/Inc/main.h` (modificado - adicionados defines e protótipos)
+  - `stm32_firmware/Core/Src/main.c` (modificado - integração de alertas e comandos)
+  - `esp32_firmware/main/stm32_cmd.h` (criado)
+  - `esp32_firmware/main/stm32_cmd.c` (criado)
+  - `esp32_firmware/main/stm32_uart.h` (modificado - protótipo stm32_uart_send_string)
+  - `esp32_firmware/main/stm32_uart.c` (modificado - implementação stm32_uart_send_string)
+  - `esp32_firmware/main/main.c` (modificado - dispatcher_task com comandos de buzzer)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado - adicionado stm32_cmd.c)
+
+### Phase 19: Homologação, Economia de Energia e Testes de Campo
+- **Status:** in_progress
+- **Started:** 2026-05-20T19:00:00
+- **Actions taken:**
+  - Criado módulo `power_mgmt.c/.h` no STM32 com gerenciamento de energia.
+  - Implementado modo Stop (Low Power) após 30s de inatividade.
+  - Wake-up automático por atividade UART (dados recebidos).
+  - Criado módulo `esp_power.c/.h` no ESP32 com light sleep após 60s.
+  - Criado script de teste de estresse `verify_mesh_stress.py` com 4 cenários.
+- **Files created/modified:**
+  - `stm32_firmware/Core/Inc/power_mgmt.h` (criado)
+  - `stm32_firmware/Core/Src/power_mgmt.c` (criado)
+  - `stm32_firmware/Core/Inc/main.h` (modificado - protótipos power_mgmt)
+  - `stm32_firmware/Core/Src/main.c` (modificado - integração power e wake-up)
+  - `esp32_firmware/main/esp_power.h` (criado)
+  - `esp32_firmware/main/esp_power.c` (criado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado - adicionado esp_power)
+  - `esp32_firmware/main/main.c` (modificado - integração esp_power)
+  - `teste_automatizado/verify_mesh_stress.py` (criado)
+
 
 

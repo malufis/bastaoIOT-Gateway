@@ -63,8 +63,12 @@ void Error_Handler(void);
 #define WL134_PWR_PORT GPIOB
 #define YRM100_PWR_PIN GPIO_PIN_5
 #define YRM100_PWR_PORT GPIOB
+#define BUZZER_PIN GPIO_PIN_6
+#define BUZZER_PORT GPIOB
 
 #define RFID_BUFFER_SIZE 128
+#define CMD_BUFFER_SIZE 256
+#define BATTERY_CRITICAL_THRESHOLD 15.0f
 
 typedef struct {
     uint8_t raw_data[RFID_BUFFER_SIZE];
@@ -73,11 +77,36 @@ typedef struct {
     uint8_t flag_new_data;
 } RFID_Buffer_t;
 
+typedef struct {
+    uint8_t data[CMD_BUFFER_SIZE];
+    uint16_t head;
+    uint16_t tail;
+} CMD_Buffer_t;
+
+typedef enum {
+    BUZZER_NONE = 0,
+    BUZZER_SHORT = 1,
+    BUZZER_LONG = 2,
+    BUZZER_DOUBLE = 3
+} BuzzerPattern_t;
+
 void RFID_Process_YRM100(void);
 void RFID_Process_WL134(void);
 void Battery_Read(void);
 void reverse_str(char* str, int len);
 uint64_t hex_to_uint64(const char* hex_str);
+
+void Alerts_Init(void);
+void Alerts_CheckBattery(float voltage);
+void Alerts_ProcessCommand(const char* json);
+void Buzzer_Play(BuzzerPattern_t pattern);
+
+void Power_Init(void);
+void Power_Update(void);
+void Power_Sleep(void);
+void Power_Wake(void);
+uint8_t Power_IsSleeping(void);
+void Power_ActivityDetected(void);
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

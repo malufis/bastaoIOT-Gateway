@@ -16,6 +16,7 @@
 #include "offline_cache.h"
 #include "cJSON.h"
 #include "ota_manager.h"
+#include "cmd_parser.h"
 
 static const char *TAG = "MQTT_PUB";
 
@@ -80,19 +81,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         if (temp_buf != NULL) {
             memcpy(temp_buf, event->data, event->data_len);
             temp_buf[event->data_len] = '\0';
-            
-            cJSON *json = cJSON_Parse(temp_buf);
-            if (json != NULL) {
-                cJSON *cmd_item = cJSON_GetObjectItem(json, "cmd");
-                if (cmd_item != NULL && cJSON_IsString(cmd_item) && strcmp(cmd_item->valuestring, "ota") == 0) {
-                    cJSON *url_item = cJSON_GetObjectItem(json, "url");
-                    if (url_item != NULL && cJSON_IsString(url_item)) {
-                        ESP_LOGI(TAG, "Comando OTA recebido. Iniciando atualização via url: %s", url_item->valuestring);
-                        ota_manager_start(url_item->valuestring);
-                    }
-                }
-                cJSON_Delete(json);
-            }
+
+            cmd_parser_process_message(event->topic, temp_buf);
             free(temp_buf);
         }
     }

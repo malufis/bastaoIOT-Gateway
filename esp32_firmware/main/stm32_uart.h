@@ -50,17 +50,23 @@ extern "C" {
  */
 typedef enum {
     DATA_TYPE_RFID,     /**< Leitura física de tag RFID (LF ou UHF) */
-    DATA_TYPE_BATTERY   /**< Medição de telemetria analógica da bateria */
+    DATA_TYPE_BATTERY,  /**< Medição de telemetria analógica da bateria */
+    DATA_TYPE_ACCEL,    /**< Dados do acelerômetro da K10 */
+    DATA_TYPE_RFID_WITH_ACCEL /**< RFID com dados de movimento */
 } data_type_t;
 
 /**
  * @brief Estrutura contendo o payload decodificado e validado do STM32.
  */
 typedef struct {
-    data_type_t type;     /**< Tipo de dado contido na mensagem */
-    char model[16];       /**< Nome legível do leitor de origem (ex: "WL134" ou "YRM100") */
-    char tag[64];         /**< Identificação única da Tag (EPC hexadecimal ou código decimal do animal) */
-    float battery_v;      /**< Tensão analógica calculada da bateria (em Volts) */
+    data_type_t type;
+    char model[16];
+    char tag[64];
+    float battery_v;
+    float accel_x;
+    float accel_y;
+    float accel_z;
+    uint8_t movement;
 } stm32_data_t;
 
 /* --- Variáveis Globais Compartilhadas --- */
@@ -92,14 +98,23 @@ esp_err_t stm32_uart_init(void);
  * @brief Cria e inicia a tarefa assíncrona do FreeRTOS encarregada de ler a UART.
  * @details Instancia a task de leitura em background, que escutará a UART continuamente,
  *          decodificará strings em formato JSON terminadas por '\n' e alimentará a fila global.
- * 
+ *
  * @pre A fila stm32_data_queue e o driver de UART já devem estar previamente inicializados.
- * 
+ *
  * @param[in] priority Prioridade de execução da task FreeRTOS. Recomenda-se prioridade intermediária (ex: 5).
- * 
+ *
  * @return BaseType_t Retorna pdPASS se a criação da task foi bem sucedida, ou código de erro do FreeRTOS.
  */
 BaseType_t stm32_uart_rx_task_start(UBaseType_t priority);
+
+/**
+ * @brief Envia uma string de comando para o STM32 via UART.
+ * @details Envia dados serialmente para o microcontrolador STM32.
+ *
+ * @param[in] str String terminada em nulo a ser enviada.
+ * @return esp_err_t ESP_OK em caso de sucesso.
+ */
+esp_err_t stm32_uart_send_string(const char *str);
 
 #ifdef __cplusplus
 }

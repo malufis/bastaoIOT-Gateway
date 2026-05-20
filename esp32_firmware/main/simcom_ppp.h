@@ -77,6 +77,37 @@ typedef enum {
     SIMCOM_STATE_ERROR         /**< Estado de erro ou falha de comunicação */
 } simcom_state_t;
 
+/**
+ * @brief Enumeração das tecnologias de rede celular suportadas.
+ */
+typedef enum {
+    CELLULAR_TECH_NONE = 0,   /**< Sem rede */
+    CELLULAR_TECH_2G,         /**< GSM/GPRS 2G */
+    CELLULAR_TECH_3G,         /**< UMTS/HSPA 3G */
+    CELLULAR_TECH_4G_LTE,     /**< LTE 4G */
+    CELLULAR_TECH_NB_IOT,     /**< NB-IoT (LTE Cat NB1/NB2) */
+    CELLULAR_TECH_UNKNOWN     /**< Tecnologia desconhecida */
+} cellular_tech_t;
+
+/**
+ * @brief Estrutura contendo o status completo da rede celular.
+ */
+typedef struct {
+    int rssi;                  /**< RSSI em dBm (-113 a -51) ou 99 se não detectável */
+    int ber;                   /**< BER (Bit Error Rate) ou -1 se não disponível */
+    cellular_tech_t tech;      /**< Tecnologia de rede atual */
+    int mcc;                   /**< Código do país móvel (Mobile Country Code) */
+    int mnc;                   /**< Código da rede móvel (Mobile Network Code) */
+    int lac;                   /**< Código da área de localização (Location Area Code) */
+    int cid;                   /**< Cell ID (identificador da célula) */
+    char operator_name[32];    /**< Nome da operadora */
+    bool registered;          /**< Flag indicando registro na rede */
+    bool roaming;             /**< Flag indicando roaming */
+    uint32_t tx_bytes;         /**< Bytes transmitidos via PPP */
+    uint32_t rx_bytes;         /**< Bytes recebidos via PPP */
+    simcom_state_t modem_state;/**< Estado operacional do modem */
+} cellular_status_t;
+
 /* --- Funções de Interface Pública --- */
 
 /**
@@ -185,6 +216,53 @@ void simcom_ppp_set_suspended(bool suspend);
  * @return true se a conectividade celular estiver suspensa.
  */
 bool simcom_ppp_is_suspended(void);
+
+/**
+ * @brief Lê a qualidade do sinal celular (RSSI e BER).
+ * @details Envia AT+CSQ para obter RSSI (Received Signal Strength Indicator)
+ *          e BER (Bit Error Rate).
+ *
+ * @param[out] rssi Ponteiro para receber o valor RSSI em dBm (-113 a -51, ou 99).
+ * @param[out] ber Ponteiro para receber o valor BER (-1 se não disponível).
+ *
+ * @return esp_err_t ESP_OK se os dados foram obtidos com sucesso.
+ */
+esp_err_t simcom_ppp_get_signal_quality(int *rssi, int *ber);
+
+/**
+ * @brief Obtém informações detalhadas sobre a rede celular conectada.
+ * @details Envia AT+QNWINFO para identificar tecnologia, banda e operador.
+ *
+ * @param[out] tech Ponteiro para receber a tecnologia de rede.
+ * @param[out] mcc Ponteiro para receber o código do país (ex: 55 para Brasil).
+ * @param[out] mnc Ponteiro para receber o código da rede.
+ * @param[out] operator_name Buffer para receber o nome da operadora.
+ *
+ * @return esp_err_t ESP_OK se as informações foram obtidas com sucesso.
+ */
+esp_err_t simcom_ppp_get_network_info(cellular_tech_t *tech, int *mcc,
+                                       int *mnc, char *operator_name);
+
+/**
+ * @brief Obtém o status completo da rede celular para diagnóstico.
+ * @details Consolida RSSI, tecnologia, operador, registro e contador de bytes.
+ *
+ * @param[out] status Ponteiro para a estrutura que receberá o status completo.
+ *
+ * @return esp_err_t ESP_OK se o status foi obtido com sucesso.
+ */
+esp_err_t simcom_ppp_get_status(cellular_status_t *status);
+
+/**
+ * @brief Gera um JSON com o diagnóstico completo da rede celular.
+ * @details Útil para logs de campo e transmissão via MQTT.
+ *
+ * @param[out] json_buf Buffer para receber o JSON格式.
+ * @param[in] buf_size Tamanho do buffer.
+ *
+ * @return esp_err_t ESP_OK se o JSON foi gerado com sucesso.
+ */
+esp_err_t simcom_ppp_diagnostic_json(char *json_buf, size_t buf_size);
 
 #ifdef __cplusplus
 }

@@ -584,3 +584,213 @@ void simcom_ppp_set_suspended(bool suspend) {
 bool simcom_ppp_is_suspended(void) {
   return cellular_suspended;
 }
+
+static cellular_tech_t parse_cellular_tech(const char *tech_str) {
+  if (strstr(tech_str, "LTE") || strstr(tech_str, "4G") ||
+      strstr(tech_str, "E-UTRAN")) {
+    return CELLULAR_TECH_4G_LTE;
+  }
+  if (strstr(tech_str, "NB-IoT") || strstr(tech_str, "NBIOT") ||
+      strstr(tech_str, "Cat NB")) {
+    return CELLULAR_TECH_NB_IOT;
+  }
+  if (strstr(tech_str, "WCDMA") || strstr(tech_str, "UMTS") ||
+      strstr(tech_str, "HSDPA") || strstr(tech_str, "HSUPA") ||
+      strstr(tech_str, "3G")) {
+    return CELLULAR_TECH_3G;
+  }
+  if (strstr(tech_str, "GSM") || strstr(tech_str, "GPRS") ||
+      strstr(tech_str, "EDGE") || strstr(tech_str, "2G")) {
+    return CELLULAR_TECH_2G;
+  }
+  return CELLULAR_TECH_UNKNOWN;
+}
+
+esp_err_t simcom_ppp_get_signal_quality(int *rssi, int *ber) {
+  if (rssi == NULL || ber == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  char resp[AT_RESPONSE_BUF_SIZE];
+  esp_err_t err =
+      at_send_cmd("AT+CSQ\r\n", "+CSQ:", resp, sizeof(resp), AT_DEFAULT_TIMEOUT_MS);
+
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Falha ao consultar CSQ: %s",
+             err == ESP_ERR_TIMEOUT ? "timeout" : "erro");
+    *rssi = 99;
+    *ber = -1;
+    return err;
+  }
+
+  int rssi_raw = 0, ber_raw = 0;
+  if (sscanf(resp, "%*[^+]+CSQ: %d,%d", &rssi_raw, &ber_raw) == 2) {
+    if (rssi_raw == 99) {
+      *rssi = -113;
+    } else {
+      *rssi = -113 + (rssi_raw * 2);
+    }
+    *ber = (ber_raw == 99) ? -1 : ber_raw;
+
+    ESP_LOGI(TAG, "CSQ: RSSI=%d dBm, BER=%d", *rssi, *ber);
+    return ESP_OK;
+  }
+
+  ESP_LOGW(TAG, "Falha ao fazer parse do CSQ: %s", resp);
+  *rssi = 99;
+  *ber = -1;
+  return ESP_FAIL;
+}
+
+esp_err_t simcom_ppp_get_network_info(cellular_tech_t *tech, int *mcc,
+                                       int *mnc, char *operator_name) {
+  if (tech == NULL || mcc == NULL || mnc == NULL || operator_name == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  *tech = CELLULAR_TECH_NONE;
+  *mcc = 0;
+  *mnc = 0;
+  operator_name[0] = '\0';
+
+  char resp[AT_RESPONSE_BUF_SIZE];
+  esp_err_t err = at_send_cmd("AT+QNWINFO\r\n", "OK", resp, sizeof(resp),
+                              AT_DEFAULT_TIMEOUT_MS);
+
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Falha ao consultar QNWINFO.");
+    return err;
+  }
+
+  char *info = strstr(resp, "+QNWINFO:");
+  if (info != NULL) {
+    info += strlen("+QNWINFO:");
+    while (*info == ' ') info++;
+
+    char act_raw[32] = {0};
+    int act_mcc = 0, act_mnc = 0;
+
+    if (sscanf(info, "\"%31[^\"]\",%d,%d", act_raw, &act_mcc, &act_mnc) >= 1) {
+      *tech = parse_cellular_tech(act_raw);
+      *mcc = act_mcc;
+      *mnc = act_mnc;
+    }
+
+    ESP_LOGI(TAG, "QNWINFO: Tech=%d (%s), MCC=%d, MNC=%d", *tech, act_raw,
+             *mcc, *mnc);
+  }
+
+  char cops_resp[AT_RESPONSE_BUF_SIZE];
+  err = at_send_cmd("AT+COPS?\r\n", "+COPS:", cops_resp, sizeof(cops_resp),
+                    AT_DEFAULT_TIMEOUT_MS);
+  if (err == ESP_OK) {
+    char *cops = strstr(cops_resp, "+COPS:");
+    if (cops != NULL) {
+      char long_name[32] = {0};
+      if (sscanf(cops, "+COPS: %*d,%*d,\"%31[^\"]\"", long_name) == 1) {
+        strncpy(operator_name, long_name, 31);
+        ESP_LOGI(TAG, "Operadora: %s", operator_name);
+      }
+    }
+  }
+
+  return ESP_OK;
+}
+
+esp_err_t simcom_ppp_get_status(cellular_status_t *status) {
+  if (status == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  memset(status, 0, sizeof(cellular_status_t));
+  status->rssi = 99;
+  status->ber = -1;
+  status->tech = CELLULAR_TECH_NONE;
+  status->modem_state = modem_state;
+
+  simcom_ppp_get_signal_quality(&status->rssi, &status->ber);
+  simcom_ppp_get_network_info(&status->tech, &status->mcc, &status->mnc,
+                               status->operator_name);
+
+  char creg_resp[AT_RESPONSE_BUF_SIZE];
+  esp_err_t err = at_send_cmd("AT+CREG?\r\n", "+CREG:", creg_resp,
+                              sizeof(creg_resp), AT_DEFAULT_TIMEOUT_MS);
+  if (err == ESP_OK) {
+    int n, stat = 0;
+    if (sscanf(creg_resp, "%*[^+]+CREG: %d,%d", &n, &stat) == 2) {
+      status->registered = (stat == 1 || stat == 5);
+      status->roaming = (stat == 5);
+    }
+  }
+
+  ESP_LOGI(TAG,
+           "Status Cellular: Tech=%d, RSSI=%d, Op=%s, Reg=%d, PPP=%d",
+           status->tech, status->rssi, status->operator_name,
+           status->registered,
+           modem_state == SIMCOM_STATE_PPP_ACTIVE);
+
+  return ESP_OK;
+}
+
+esp_err_t simcom_ppp_diagnostic_json(char *json_buf, size_t buf_size) {
+  if (json_buf == NULL || buf_size == 0) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  cellular_status_t status;
+  simcom_ppp_get_status(&status);
+
+  const char *tech_str = "UNKNOWN";
+  switch (status.tech) {
+    case CELLULAR_TECH_2G:
+      tech_str = "2G";
+      break;
+    case CELLULAR_TECH_3G:
+      tech_str = "3G";
+      break;
+    case CELLULAR_TECH_4G_LTE:
+      tech_str = "4G LTE";
+      break;
+    case CELLULAR_TECH_NB_IOT:
+      tech_str = "NB-IoT";
+      break;
+    case CELLULAR_TECH_NONE:
+      tech_str = "NONE";
+      break;
+    default:
+      break;
+  }
+
+  int snr_dbm = 0;
+  if (status.rssi < 99 && status.rssi >= -113) {
+    snr_dbm = status.rssi;
+  }
+
+  int ret = snprintf(
+      json_buf, buf_size,
+      "{"
+      "\"type\":\"cellular_diagnostic\","
+      "\"rssi_dbm\":%d,"
+      "\"ber\":%d,"
+      "\"technology\":\"%s\","
+      "\"mcc\":%d,"
+      "\"mnc\":%d,"
+      "\"operator\":\"%s\","
+      "\"registered\":%s,"
+      "\"roaming\":%s,"
+      "\"modem_state\":%d,"
+      "\"ppp_active\":%s"
+      "}",
+      status.rssi, status.ber, tech_str, status.mcc, status.mnc,
+      status.operator_name, status.registered ? "true" : "false",
+      status.roaming ? "true" : "false", status.modem_state,
+      modem_state == SIMCOM_STATE_PPP_ACTIVE ? "true" : "false");
+
+  if (ret < 0 || (size_t)ret >= buf_size) {
+    ESP_LOGE(TAG, "Buffer insuficiente para JSON de diagnóstico.");
+    return ESP_ERR_NO_MEM;
+  }
+
+  ESP_LOGI(TAG, "Diagnóstico celular: %s", json_buf);
+  return ESP_OK;
+}

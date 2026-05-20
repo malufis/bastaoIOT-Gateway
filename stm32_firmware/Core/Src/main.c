@@ -23,6 +23,8 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include "alerts.h"
+#include "power_mgmt.h"
 
 /* USER CODE END Includes */
 
@@ -54,6 +56,9 @@ RFID_Buffer_t buffer_yrm100 = {0};
 RFID_Buffer_t buffer_wl134 = {0};
 uint8_t byte_yrm100;
 uint8_t byte_wl134;
+
+CMD_Buffer_t cmd_buffer = {0};
+uint8_t cmd_byte;
 
 uint32_t last_battery_check = 0;
 uint32_t last_yrm100_poll = 0;
@@ -113,38 +118,57 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USART4_UART_Init();
   /* USER CODE BEGIN 2 */
-  // Power on RFID sensors
+  Alerts_Init();
+  Power_Init();
+
   HAL_GPIO_WritePin(WL134_PWR_PORT, WL134_PWR_PIN, GPIO_PIN_SET);
   HAL_GPIO_WritePin(YRM100_PWR_PORT, YRM100_PWR_PIN, GPIO_PIN_SET);
 
-  // Wait for sensors to stabilize (boot time delay)
   HAL_Delay(100);
 
-  // Start UART reception in interrupt mode
   HAL_UART_Receive_IT(&huart3, &byte_wl134, 1);
   HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
+  HAL_UART_Receive_IT(&huart2, &cmd_byte, 1);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   while (1)
   {
-    RFID_Process_YRM100();
-    RFID_Process_WL134();
-    
+    if (!Power_IsSleeping()) {
+        RFID_Process_YRM100();
+        RFID_Process_WL134();
+
+        Buzzer_Update();
+
+        Command_Process();
+
+        Power_Update();
+    } else {
+        HAL_PWR_EnterSTOPMode(PWR_LOWPOWERMODE_STOP, PWR_STOPENTRY_WFI);
+        SystemClock_Config();
+        Power_Init();
+
+        HAL_UART_Receive_IT(&huart3, &byte_wl134, 1);
+        HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
+        HAL_UART_Receive_IT(&huart2, &cmd_byte, 1);
+    }
+
     if (HAL_GetTick() - last_yrm100_poll > 200) {
         uint8_t cmd_inv[] = {0xBB, 0x00, 0x22, 0x00, 0x00, 0x22, 0x7E};
         HAL_UART_Transmit(&huart4, cmd_inv, sizeof(cmd_inv), 50);
         last_yrm100_poll = HAL_GetTick();
     }
-    
+
     if (HAL_GetTick() - last_battery_check > 5000) {
         Battery_Read();
         last_battery_check = HAL_GetTick();
-        
+
         char msg[128];
         sprintf(msg, "{\"type\":\"batt\",\"volt\":%.2f}\n", battery_voltage);
         HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+
+        Alerts_CheckBattery(battery_voltage);
     }
     /* USER CODE END WHILE */
 
@@ -485,15 +509,31 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    if (huart->Instance == USART4) { // YRM100
+    Power_ActivityDetected();
+
+    if (huart->Instance == USART4) {
         buffer_yrm100.raw_data[buffer_yrm100.head] = byte_yrm100;
         buffer_yrm100.head = (buffer_yrm100.head + 1) % RFID_BUFFER_SIZE;
         HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
-    } else if (huart->Instance == USART3) { // WL-134
+    } else if (huart->Instance == USART3) {
         buffer_wl134.raw_data[buffer_wl134.head] = byte_wl134;
         buffer_wl134.head = (buffer_wl134.head + 1) % RFID_BUFFER_SIZE;
         HAL_UART_Receive_IT(&huart3, &byte_wl134, 1);
+    } else if (huart->Instance == USART2) {
+        if (cmd_byte == '\n' || cmd_byte == '\r') {
+            if (cmd_buffer.head > 0) {
+                cmd_buffer.data[cmd_buffer.head] = '\0';
+                Alerts_ProcessCommand((const char*)cmd_buffer.data);
+                cmd_buffer.head = 0;
+            }
+        } else if (cmd_buffer.head < CMD_BUFFER_SIZE - 1) {
+            cmd_buffer.data[cmd_buffer.head++] = cmd_byte;
+        }
+        HAL_UART_Receive_IT(&huart2, &cmd_byte, 1);
     }
+}
+
+void Command_Process(void) {
 }
 
 void RFID_Process_YRM100(void) {

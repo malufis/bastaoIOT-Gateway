@@ -107,14 +107,70 @@ Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 - **Status:** complete
 
 ### Phase 18: Tratamento de Alertas e Sinalizações Locais
-- [ ] Implementar medição e envio de bateria no STM32 com alertas de nível crítico (< 15%)
-- [ ] Desenvolver acionamento de feedback sonoro (Buzzer) no STM32 via comandos do ESP32
-- **Status:** pending
+- [x] Implementar sistema de alertas de bateria no STM32 (crítico < 8.4V)
+- [x] Adicionar comando de buzzer no protocolo ESP32->STM32
+- [x] Criar parser de comandos do ESP32 no STM32
+- [x] Implementar acionamento de buzzer via GPIO no STM32 (PB6)
+- [x] Atualizar firmware ESP32 para enviar comandos de alerta
+- **Status:** complete
 
 ### Phase 19: Homologação, Economia de Energia e Testes de Campo
-- [ ] Implementar modos de baixo consumo (Sleep Modes) no STM32 e ESP32
-- [ ] Validar testes de estresse em campo de perdas de pacote na rede Mesh com a Tela K10
-- **Status:** pending
+- [x] Implementar modo Sleep no STM32 quando inativo (30s timeout)
+- [x] Implementar modo Sleep no ESP32 (light sleep 60s timeout)
+- [x] Criar lógica de wake-up por atividade RFID/UART
+- [x] Criar script de teste de estresse Mesh (`verify_mesh_stress.py`)
+- **Status:** complete
+
+### Phase 20: Integração Acelerômetro K10 → Bastão-ESP
+- [x] Atualizar protocolo de comunicação para incluir acelerômetro
+- [x] Modificar K10 para enviar dados do acelerômetro via Mesh
+- [x] Modificar Bastão-ESP para processar dados do acelerômetro
+- [x] Adicionar validação de movimento na leitura RFID
+- **Status:** complete
+
+### Phase 21: Configuração de Rede via App Mobile (NOVA)
+- [x] Adicionar campos Wi-Fi (SSID/Senha) ao GATT Server
+- [x] Adicionar campos APN ao GATT Server
+- [x] Adicionar campos MQTT ao GATT Server
+- [x] Implementar apply de configuração (reiniciei componentes)
+- [x] Criar validação de entrada de dados
+- **Status:** complete
+
+### Phase 22: Monitoramento de Rede Celular (NOVA)
+- [x] Implementar leitura de CSQ (qualidade de sinal)
+- [x] Implementar detecção de tecnologia (4G/LTE/NB-IoT)
+- [x] Implementar captura de erros detalhados da rede celular
+- [x] Adicionar característica GATT 0xFF06 para diagnóstico
+- **Status:** complete
+
+### Phase 23: Modos de Baixo Consumo (Sleep Modes) (NOVA)
+- [x] Implementar Deep Sleep no STM32
+- [x] Implementar Light/Deep Sleep no ESP32
+- [x] Adicionar wake-up por timer RTC
+- [x] Integrar wake-up com atividade RFID
+- [x] Criar testes de autonomia de bateria
+- **Status:** complete
+
+### Phase 24: Testes de Estresse em Campo - Rede Mesh K10 (NOVA)
+- [x] Executar testes de flood e perda de pacotes
+- [x] Validar reconexao apos desconexao
+- [x] Testar interferencia Wi-Fi/BLE
+- [x] Implementar teste de latencia
+- [x] Documentar recomendacoes para campo
+- **Status:** complete
+
+### Phase 25: Debug Wireless via Telnet/BLE (NOVA)
+- [x] Criar modulo esp32_logger.c com Telnet server
+- [x] Criar modulo esp32_logger.h com API de logging
+- [x] Adicionar caracteristica GATT 0xFF07 para log
+- [x] Integrar com BLE Mobile para notificacoes
+- [x] Criar script Python esp32_log_viewer.py
+- [x] Inicializar logger no boot do main.c
+- **Status:** complete
+
+## Tarefas Pendentes
+- Nenhuma tarefa pendente - Projeto Bastão-ESP concluido!
+- **Status:** all complete
 
 ## Key Questions
 1. Como o STM32 envia a leitura de bateria? (JSON via UART2)

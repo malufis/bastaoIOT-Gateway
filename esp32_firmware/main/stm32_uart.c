@@ -106,6 +106,56 @@ static void stm32_uart_parse_json(const char *raw_json_str)
         } else {
             ESP_LOGW(TAG, "Campo 'volt' ausente ou inválido na mensagem do tipo bateria");
         }
+    }
+    else if (strcmp(type_item->valuestring, "accel") == 0) {
+        received_data.type = DATA_TYPE_ACCEL;
+
+        cJSON *x_item = cJSON_GetObjectItem(json, "x");
+        cJSON *y_item = cJSON_GetObjectItem(json, "y");
+        cJSON *z_item = cJSON_GetObjectItem(json, "z");
+        cJSON *mov_item = cJSON_GetObjectItem(json, "movement");
+
+        if (x_item && y_item && z_item && mov_item && cJSON_IsNumber(x_item)) {
+            received_data.accel_x = (float)x_item->valuedouble;
+            received_data.accel_y = (float)y_item->valuedouble;
+            received_data.accel_z = (float)z_item->valuedouble;
+            received_data.movement = (uint8_t)mov_item->valueint;
+
+            ESP_LOGI(TAG, "[K10_RX]: Acel X:%.2f Y:%.2f Z:%.2f Mov:%d",
+                     received_data.accel_x, received_data.accel_y,
+                     received_data.accel_z, received_data.movement);
+
+            if (stm32_data_queue != NULL) {
+                xQueueSend(stm32_data_queue, &received_data, 0);
+            }
+        }
+    }
+    else if (strcmp(type_item->valuestring, "rfid") == 0) {
+        cJSON *x_item = cJSON_GetObjectItem(json, "x");
+        if (x_item != NULL) {
+            received_data.type = DATA_TYPE_RFID_WITH_ACCEL;
+            received_data.accel_x = (float)cJSON_GetObjectItem(json, "x")->valuedouble;
+            received_data.accel_y = (float)cJSON_GetObjectItem(json, "y")->valuedouble;
+            received_data.accel_z = (float)cJSON_GetObjectItem(json, "z")->valuedouble;
+            received_data.movement = (uint8_t)cJSON_GetObjectItem(json, "movement")->valueint;
+        } else {
+            received_data.type = DATA_TYPE_RFID;
+        }
+
+        cJSON *model_item = cJSON_GetObjectItem(json, "model");
+        cJSON *tag_item = cJSON_GetObjectItem(json, "tag");
+
+        if (model_item && cJSON_IsString(model_item) && tag_item && cJSON_IsString(tag_item)) {
+            strncpy(received_data.model, model_item->valuestring, sizeof(received_data.model) - 1);
+            strncpy(received_data.tag, tag_item->valuestring, sizeof(received_data.tag) - 1);
+
+            ESP_LOGI(TAG, "[K10_RX]: RFID %s Tag: %s (Mov:%d)",
+                     received_data.model, received_data.tag, received_data.movement);
+
+            if (stm32_data_queue != NULL) {
+                xQueueSend(stm32_data_queue, &received_data, 0);
+            }
+        }
     } 
     else {
         ESP_LOGW(TAG, "Tipo JSON não mapeado no firmware do ESP32: %s", type_item->valuestring);
@@ -208,4 +258,19 @@ BaseType_t stm32_uart_rx_task_start(UBaseType_t priority)
 {
     // Cria a task FreeRTOS com pilha segura de 4KB para acomodar buffers locais e uso de cJSON
     return xTaskCreate(stm32_uart_rx_task, "stm32_uart_rx_task", 4096, NULL, priority, NULL);
+}
+
+esp_err_t stm32_uart_send_string(const char *str) {
+    if (str == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t len = strlen(str);
+    int bytes_written = uart_write_bytes(STM32_UART_PORT, str, len);
+
+    if (bytes_written < 0) {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
 }

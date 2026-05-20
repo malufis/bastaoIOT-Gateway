@@ -24,10 +24,13 @@
 #include "secure_payload.h"
 #include "simcom_ppp.h"
 #include "stm32_uart.h"
+#include "stm32_cmd.h"
 #include "offline_cache.h"
 #include "ota_manager.h"
 #include "wifi_driver.h"
 #include "animal_db.h"
+#include "esp_power.h"
+#include "cmd_parser.h"
 
 static const char *TAG = "MAIN";
 
@@ -76,14 +79,16 @@ static const mqtt_publisher_config_t default_mqtt_config = {
 static void dispatcher_task(void *pvParameters) {
   stm32_data_t raw_msg;
   char json_buf[320];
-  char encrypted_hex[768]; // Buffer suficiente para bloco criptografado em hex
-                           // + terminador nulo
+  char encrypted_hex[768];
 
   ESP_LOGI(TAG, "Task despachante iniciada com sucesso.");
 
   while (1) {
-    // Aguarda indefinidamente por pacotes vindos da fila UART do STM32
-    if (xQueueReceive(stm32_data_queue, &raw_msg, portMAX_DELAY) == pdTRUE) {
+    // Verifica período de energia
+    esp_power_update();
+
+    // Aguarda por dados com timeout de 1s para permitir verificação periódica
+    if (xQueueReceive(stm32_data_queue, &raw_msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
       memset(json_buf, 0, sizeof(json_buf));
       memset(encrypted_hex, 0, sizeof(encrypted_hex));
 
@@ -103,13 +108,54 @@ static void dispatcher_task(void *pvParameters) {
 
         // Notifica o app movel conectado via BLE sobre a nova tag lida
         ble_mobile_notify_tag(json_buf);
+        esp_power_trigger_wake();
         bastao_current_status.tags_read_count++;
+
+        // Envia comando de buzzer para o STM32 indicando leitura exitosa
+        stm32_cmd_send_buzzer(STM32_CMD_BUZZER_SHORT);
       } else if (raw_msg.type == DATA_TYPE_BATTERY) {
         snprintf(json_buf, sizeof(json_buf),
                  "{\"type\":\"batt\",\"volt\":%.2f}", raw_msg.battery_v);
 
-        // Atualiza a tensao de bateria no status global do dispositivo
         bastao_current_status.battery_voltage = raw_msg.battery_v;
+
+        if (raw_msg.battery_v < 9.0f) {
+          stm32_cmd_send_buzzer(STM32_CMD_BUZZER_LONG);
+        }
+      } else if (raw_msg.type == DATA_TYPE_ACCEL) {
+        snprintf(json_buf, sizeof(json_buf),
+                 "{\"type\":\"accel\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"movement\":%d}",
+                 raw_msg.accel_x, raw_msg.accel_y, raw_msg.accel_z, raw_msg.movement);
+
+        ESP_LOGI(TAG, "Acelerômetro recebido - Movimento: %s",
+                 raw_msg.movement ? "SIM" : "NÃO");
+
+        bara_current_status.movement_detected = raw_msg.movement;
+      } else if (raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL) {
+        animal_record_t anim_rec;
+        esp_err_t db_err = animal_db_lookup(raw_msg.tag, &anim_rec);
+
+        if (db_err == ESP_OK) {
+          snprintf(json_buf, sizeof(json_buf),
+                   "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"name\":\"%s\",\"weight\":%.2f,\"lot\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"movement\":%d}",
+                   raw_msg.model, raw_msg.tag, anim_rec.name, anim_rec.weight, anim_rec.lot,
+                   raw_msg.accel_x, raw_msg.accel_y, raw_msg.accel_z, raw_msg.movement);
+        } else {
+          snprintf(json_buf, sizeof(json_buf),
+                   "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"movement\":%d}",
+                   raw_msg.model, raw_msg.tag,
+                   raw_msg.accel_x, raw_msg.accel_y, raw_msg.accel_z, raw_msg.movement);
+        }
+
+        ble_mobile_notify_tag(json_buf);
+        bara_current_status.tags_read_count++;
+
+        if (raw_msg.movement) {
+          stm32_cmd_send_buzzer(STM32_CMD_BUZZER_SHORT);
+          ESP_LOGI(TAG, "RFID + Movimento válido - Bipe curto");
+        } else {
+          ESP_LOGW(TAG, "RFID + Movimento suspeito - Pode estar em superfície estática");
+        }
       } else {
         ESP_LOGW(TAG, "Mensagem recebida com tipo inválido ou desconhecido.");
         continue;
@@ -149,8 +195,6 @@ static void dispatcher_task(void *pvParameters) {
 void app_main(void) {
   ESP_LOGI(TAG, "Inicializando o Bastão-ESP Mesh Coordinator...");
 
-  // 1. Inicializa a partição NVS Flash (Necessária para Bluetooth e
-  // armazenamento de chaves)
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
       ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -159,24 +203,34 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
 
-  // 1a. Inicializa o banco de dados de animais local
   animal_db_init();
+  esp_power_init();
 
-  // 1b. Inicializa o Cache Offline (SPIFFS) e a tarefa de sincronização
   if (offline_cache_init() == ESP_OK) {
     offline_cache_sync_task_start(3);
   } else {
     ESP_LOGE(TAG, "Falha ao inicializar o Cache Offline SPIFFS.");
   }
 
-  // 1c. Inicializa o OTA Manager (cancela rollback se firmware novo rodou com sucesso)
   ota_manager_init();
 
-  // 1d. Inicializa e conecta ao Wi-Fi Station
+  ble_mobile_load_network_config();
+
   if (wifi_driver_init() == ESP_OK) {
-    wifi_driver_connect("bastaoIOT", "3spB@st@0");
+    if (bastao_network_config.wifi.enabled &&
+        strlen(bastao_network_config.wifi.ssid) > 0) {
+      wifi_driver_connect(bastao_network_config.wifi.ssid,
+                        bastao_network_config.wifi.password);
+    }
   } else {
     ESP_LOGE(TAG, "Falha ao inicializar o driver Wi-Fi.");
+  }
+
+  // 1f. Inicializa o logger wireless para debug remoto
+  if (esp_logger_init() == ESP_OK) {
+    esp_logger_start_telnet();
+    ESP_LOGI(TAG, "Logger Telnet ativo na porta 23");
+    ble_mobile_log_enable(true);
   }
 
   // 2. Instancia a fila global compartilhada para tráfego de dados recebidos do
@@ -209,6 +263,9 @@ void app_main(void) {
   if (stm32_uart_init() != ESP_OK) {
     ESP_LOGE(TAG, "Falha ao inicializar o driver serial do STM32.");
   } else {
+    // 5b. Inicializa o módulo de comandos para o STM32
+    stm32_cmd_init();
+
     // 6. Dispara a tarefa do FreeRTOS encarregada de ler a serial e parsear os
     // JSONs
     if (stm32_uart_rx_task_start(5) != pdPASS) {
@@ -262,6 +319,8 @@ void app_main(void) {
     bastao_current_status.mqtt_connected = mqtt_publisher_is_connected();
     ble_mobile_update_status(&bastao_current_status);
 
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    esp_power_update();
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }

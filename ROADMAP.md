@@ -27,6 +27,7 @@ O projeto Bastão-ESP é composto por dois microcontroladores operando em conjun
   - **BLE Mobile (GATT Server):** Conexão segura com aplicativo mobile, com autenticação MITM/PIN, para sincronização de configurações de hardware e dados de negócio (Fazenda, Lote, Animais) na NVS/SPIFFS.
   - **Cache Offline (SPIFFS Spooler):** Armazenamento de payloads em cache local se o MQTT estiver indisponível (limite de 95% de espaço). Descarregamento automático em FIFO em segundo plano assim que a rede volta.
   - **OTA HTTPS Manager:** Rotina de atualização HTTPS utilizando `esp_https_ota` com priorização automática de rede (Wi-Fi local se disponível; senão, dados celulares 4G) e rollback seguro do bootloader.
+  - **Wi-Fi STA e Redundância:** Inicialização da interface Wi-Fi STA com conexão fixa (`SSID: bastaoIOT`, `Senha: 3spB@st@0`). Implementação de chaveamento de rota inteligente que suspende a conexão celular PPP do SIMCom 7663E quando o Wi-Fi obtém IP, e a reativa via Watchdog caso o sinal de Wi-Fi caia.
 
 ### 1.3. Pipeline de Testes e Validação - **Concluído**
 - Scripts de validação em Python (`teste_automatizado/`):
@@ -36,6 +37,7 @@ O projeto Bastão-ESP é composto por dois microcontroladores operando em conjun
   - `verify_mqtt_payload.py`: Teste de decifração de dados no broker MQTT.
   - `verify_offline_cache.py`: Validação da ordenação FIFO do cache SPIFFS.
   - `verify_ota.py`: Validação do recebimento e parsing de comando OTA via MQTT.
+  - `verify_redundancy.py`: Validação do chaveamento automático de rede e suspensão celular sob Wi-Fi ativo.
 
 ---
 
@@ -43,11 +45,13 @@ O projeto Bastão-ESP é composto por dois microcontroladores operando em conjun
 
 As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de comutação de rede, a lógica de negócio local com tags, e comandos avançados na nuvem.
 
-### **Fase 14: Integração de Wi-Fi e Controle de Redundância de Rede**
+### **Fase 14: Integração de Wi-Fi e Controle de Redundância de Rede** - **Concluído**
 * **Objetivo:** Implementar o driver Wi-Fi Station no ESP32 e a lógica inteligente de alternância automática de redes.
-* **Tarefas:**
-  - Criar `wifi_driver.c/.h` para conexão com redes Wi-Fi (como as de bases de carregamento/currais).
-  - Desenvolver o gerenciador de conexões: se Wi-Fi estiver conectado, a rota padrão de internet é o Wi-Fi e a sessão PPP celular é suspensa/desligada para poupar energia e dados. Ao cair o Wi-Fi, o PPP celular é restabelecido.
+* **Status:** Concluído e validado localmente com scripts de teste.
+* **Tarefas Realizadas:**
+  - Criado o módulo `wifi_driver.c/.h` gerenciando a interface Wi-Fi STA e os tratadores de eventos de rede IP/WIFI.
+  - Adicionado chaveamento de roteamento automático: quando o Wi-Fi obtém IP, o modem celular PPP entra em modo suspenso (via `simcom_ppp_set_suspended(true)`), desligando a interface PPP e impedindo as tentativas de reconexão do watchdog.
+  - Quando a rede Wi-Fi é perdida, a suspensão do modem celular é cancelada, permitindo que o watchdog reestabeleça a conexão PPP.
 
 ### **Fase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)**
 * **Objetivo:** Unificar as tags lidas pelo STM32 com os cadastros locais de animais armazenados na NVS/Flash recebidos via aplicativo mobile.

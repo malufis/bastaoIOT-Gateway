@@ -228,9 +228,29 @@
   - `esp32_firmware/main/CMakeLists.txt` (modificado)
   - `teste_automatizado/verify_ota.py` (criado)
 
-## Test Results (Phase 12 & 13)
+## Test Results (Phase 12, 13 & 14)
 | Test | Input | Expected | Actual | Status |
 |------|-------|----------|--------|--------|
 | FIFO Cache Sim | 4 eventos de tag/bateria | Salvamento ordenado em arquivos no cache e transmissão FIFO correta após reconexão | Executado com sucesso | OK |
 | OTA JSON CMD | Payload `"cmd":"ota"` | Extração correta da URL e trigger de download | Executado com sucesso | OK |
+| Redundância Rede | Conexão/Desconexão Wi-Fi | Suspensão automática do celular e reativação pelo watchdog | Executado com sucesso | OK |
+
+### Phase 14: Integração de Wi-Fi e Controle de Redundância de Rede
+- **Status:** complete
+- **Started:** 2026-05-20T17:16:00
+- **Actions taken:**
+  - Criado o módulo `wifi_driver.c/.h` gerenciando a interface Wi-Fi STA e conexão ao AP local (`SSID: bastaoIOT`, `Senha: 3spB@st@0`).
+  - Adicionado suporte a suspensão do modem no módulo `simcom_ppp.c/.h` para liberar a sessão PPP e pausar as verificações do watchdog celular.
+  - Integrado chaveamento no driver Wi-Fi: quando Wi-Fi obtém IP, o modem celular é suspenso. Quando Wi-Fi cai, o modem celular é reativado para reestabelecer a conexão celular.
+  - Atualizado `main.c` para inicializar o Wi-Fi STA e gerenciar MQTT globalmente.
+  - Criado script de validação de redundância e chaveamento automático de rede `teste_automatizado/verify_redundancy.py`.
+- **Files created/modified:**
+  - `esp32_firmware/main/wifi_driver.h` (criado)
+  - `esp32_firmware/main/wifi_driver.c` (criado)
+  - `esp32_firmware/main/simcom_ppp.h` (modificado)
+  - `esp32_firmware/main/simcom_ppp.c` (modificado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+  - `teste_automatizado/verify_redundancy.py` (criado)
+
 

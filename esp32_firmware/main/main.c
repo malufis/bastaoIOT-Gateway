@@ -26,6 +26,7 @@
 #include "stm32_uart.h"
 #include "offline_cache.h"
 #include "ota_manager.h"
+#include "wifi_driver.h"
 
 static const char *TAG = "MAIN";
 
@@ -159,6 +160,13 @@ void app_main(void) {
   // 1c. Inicializa o OTA Manager (cancela rollback se firmware novo rodou com sucesso)
   ota_manager_init();
 
+  // 1d. Inicializa e conecta ao Wi-Fi Station
+  if (wifi_driver_init() == ESP_OK) {
+    wifi_driver_connect("bastaoIOT", "3spB@st@0");
+  } else {
+    ESP_LOGE(TAG, "Falha ao inicializar o driver Wi-Fi.");
+  }
+
   // 2. Instancia a fila global compartilhada para tráfego de dados recebidos do
   // STM32
   stm32_data_queue = xQueueCreate(10, sizeof(stm32_data_t));
@@ -203,23 +211,27 @@ void app_main(void) {
     ESP_LOGE(TAG, "Falha ao iniciar a task dispatcher_task.");
   }
 
+  // 8b. Inicializa o publicador MQTT (independente da rede ativa)
+  if (mqtt_publisher_init(&default_mqtt_config) == ESP_OK) {
+    if (mqtt_publisher_task_start(4) != pdPASS) {
+      ESP_LOGE(TAG, "Falha ao iniciar task de publicação MQTT.");
+    }
+  } else {
+    ESP_LOGE(TAG, "Falha ao inicializar cliente MQTT.");
+  }
+
   // 8. Inicializa o modem celular SIMCom 7663E e a interface PPP
   ESP_LOGI(TAG, "Inicializando módulo celular SIMCom 7663E...");
   if (simcom_ppp_init() == ESP_OK) {
     if (simcom_ppp_configure_apn(&default_apn) == ESP_OK) {
-      if (simcom_ppp_connect() == ESP_OK) {
-        ESP_LOGI(TAG, "Conectividade celular PPP ativa.");
-
-        // 9. Inicializa o cliente e a task MQTT sobre a interface PPP
-        if (mqtt_publisher_init(&default_mqtt_config) == ESP_OK) {
-          if (mqtt_publisher_task_start(4) != pdPASS) {
-            ESP_LOGE(TAG, "Falha ao iniciar task de publicação MQTT.");
-          }
+      if (!wifi_driver_is_connected()) {
+        if (simcom_ppp_connect() == ESP_OK) {
+          ESP_LOGI(TAG, "Conectividade celular PPP ativa.");
         } else {
-          ESP_LOGE(TAG, "Falha ao inicializar cliente MQTT.");
+          ESP_LOGE(TAG, "Falha inicial ao estabelecer sessão PPP (será tentado pelo Watchdog).");
         }
       } else {
-        ESP_LOGE(TAG, "Falha ao estabelecer sessão PPP.");
+        ESP_LOGI(TAG, "Wi-Fi ativo. Pulando conexão celular inicial.");
       }
     } else {
       ESP_LOGE(TAG, "Falha na configuração da APN.");

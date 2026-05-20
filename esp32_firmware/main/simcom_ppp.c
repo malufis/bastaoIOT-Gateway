@@ -58,6 +58,9 @@ static esp_netif_t *ppp_netif = NULL;
 /** @brief Configuração da APN armazenada localmente. */
 static simcom_apn_config_t stored_apn = {0};
 
+/** @brief Flag indicando se a conectividade celular está suspensa pelo gerenciador de redes. */
+static bool cellular_suspended = false;
+
 /* --- Funções Internas Privadas --- */
 
 /**
@@ -259,6 +262,11 @@ static void simcom_watchdog_task(void *pvParameters) {
 
   while (1) {
     vTaskDelay(WATCHDOG_POLL_INTERVAL_MS / portTICK_PERIOD_MS);
+
+    if (cellular_suspended) {
+      ESP_LOGD(TAG, "Watchdog celular: conectividade suspensa (Wi-Fi ativo).");
+      continue;
+    }
 
     if (modem_state == SIMCOM_STATE_PPP_ACTIVE) {
       // Conexão ativa — nada a fazer
@@ -561,4 +569,18 @@ esp_err_t simcom_ppp_get_gps(simcom_gps_data_t *gps_out) {
 BaseType_t simcom_ppp_watchdog_start(UBaseType_t priority) {
   return xTaskCreate(simcom_watchdog_task, "simcom_watchdog", 4096, NULL,
                      priority, NULL);
+}
+
+void simcom_ppp_set_suspended(bool suspend) {
+  cellular_suspended = suspend;
+  if (suspend) {
+    ESP_LOGI(TAG, "Conectividade celular suspensa pelo gerenciador de redundância. Desconectando PPP...");
+    simcom_ppp_disconnect();
+  } else {
+    ESP_LOGI(TAG, "Conectividade celular reativada pelo gerenciador de redundância.");
+  }
+}
+
+bool simcom_ppp_is_suspended(void) {
+  return cellular_suspended;
 }

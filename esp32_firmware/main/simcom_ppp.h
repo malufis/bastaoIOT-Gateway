@@ -172,6 +172,20 @@ esp_err_t simcom_ppp_get_gps(simcom_gps_data_t *gps_out);
  */
 BaseType_t simcom_ppp_watchdog_start(UBaseType_t priority);
 
+/**
+ * @brief Configura se a conectividade celular está suspensa (ex: quando Wi-Fi está ativo).
+ * 
+ * @param[in] suspend true para suspender e desconectar o modem, false para permitir conexão normal.
+ */
+void simcom_ppp_set_suspended(bool suspend);
+
+/**
+ * @brief Retorna o status de suspensão da conexão celular.
+ * 
+ * @return true se a conectividade celular estiver suspensa.
+ */
+bool simcom_ppp_is_suspended(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,9 +1,9 @@
 /**
  * @file cmd_parser.h
- * @brief Módulo de parsing de comandos remotos via MQTT
+ * @brief Modulo de parsing de comandos remotos via MQTT
  *
- * Processa comandos recebidos no tópico `bastao/cmd` para controle
- * remoto do hardware (potência RF, leitores, buzzer, etc).
+ * Processa comandos recebidos no topico `bastao/cmd` para controle
+ * remoto do hardware (potencia RF, leitores, buzzer, etc).
  */
 #ifndef CMD_PARSER_H
 #define CMD_PARSER_H

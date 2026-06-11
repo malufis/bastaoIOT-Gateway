@@ -257,3 +257,44 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
     - **⚠ TEST CODE — deve ser removido antes da producao.**
     - Documentado com `@warning` no codigo e neste roadmap.
   - **28.10 — Config Centralizada via .env:** `generate_config.py` criado, `private_configs.env` como fonte unica de config.
+
+---
+
+### **Fase 29: Refatoração do Firmware STM32 (Modularização)** - **Concluido**
+
+- **Objetivo:** Separar o codigo monolitico do `main.c` em modulos coesos conforme as skills do projeto, seguindo as boas praticas C (SRP, modularidade, buffers circulares).
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **29.1 — `rfid_parser.c/.h`:** Extraido parsing YRM100 (frame `0xBB`) e WL-134 (frame ASCII 30 bytes) do `main.c` para modulo dedicado.
+  - **29.2 — `battery_monitor.c/.h`:** Extraido leitura ADC da bateria do `main.c`, adicionado filtro de media movel (8 amostras conforme skill).
+  - **29.3 — `circular_buffer.c/.h`:** Extraido structs de buffer circular do `main.h` para modulo generico reutilizavel com API completa (Init, Write, Read, Available, Peek, Flush).
+  - **29.4 — Limpeza de `main.h`:** Removido `BATTERY_CRITICAL_THRESHOLD 15.0f` conflitante (valores corretos mantidos em `alerts.h`: 8.4V critico, 9.6V baixo). Removidas declarações movidas para os novos modulos.
+  - **29.5 — `Command_Process()`:** Implementado monitoramento de estado do buzzer e sinalizacao LED para bateria critica (piscacao a cada 500ms).
+  - **29.6 — Buffers manuais substituidos:** `RFID_Buffer_t` substituido por `rfid_parser.c/.h`, `CMD_Buffer_t` substituido por `cmd_line_buffer[]` com acesso simplificado.
+
+### **Fase 30: Validacao e Robustez do Pipeline STM32 → ESP32** - **Concluido**
+
+- **Objetivo:** Garantir que todos os dados do STM32 cheguem corretamente ao ESP32 sem perdas, e que o pipeline seja resiliente.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **30.1 — Parser `type:alert` no ESP32:** Adicionado tratamento para `{"type":"alert","code":"batt_critical","volt":...}` no `stm32_uart.c`, com novo tipo `DATA_TYPE_ALERT`.
+  - **30.2 — `test_loop_enabled` removido:** Codigo de injecao RFID falsa eliminado do `main.c` do ESP32.
+  - **30.3 — Fila aumentada:** `stm32_data_queue` ampliado de 10 para 20 itens.
+  - **30.4 — Heartbeat STM32:** Adicionado envio periodico de `{"type":"heartbeat"}\n` a cada 30s do STM32 para o ESP32.
+  - **30.5 — Watchdog STM32:** Implementado `stm32_uart_is_stm32_alive()` e `stm32_uart_watchdog_reset()`. Se ESP32 nao receber heartbeat do STM32 por >60s, loga erro e marca `bastao_current_status.stm32_alive = 0`.
+
+### **Fase 31: Testes de Integracao e Validacao Final** - **Concluido**
+
+- **Objetivo:** Validar o pipeline completo com ferramentas de teste automatizadas.
+
+- **Status:** Concluido. **88/88 testes passaram (0 falhas).**
+
+- **Scripts Criados:**
+  - **31.1 — `verify_stm32_uart.py`:** 35 testes validando formato dos JSONs do STM32 (RFID YRM100/WL134, bateria, alertas, heartbeat, comandos ESP32, watchdog, fila). Validacao de estrutura, tipos, terminacao `\n` e campos obrigatorios.
+  - **31.2 — `verify_uart_stress.py`:** 13 cenarios de estresse: burst de 20/50/100 tags, burst misto YRM100+WL134, burst com interrupcao de bateria. Documenta que fila de 20 slots e suficiente para uso real (1-10 tags/s), mas bursts >20 tags sem consumo simultaneo podem perder dados.
+  - **31.3 — `verify_bidirectional.py`:** 22 testes de comandos bidirecionais: 3 padrões de buzzer, 6 comandos de power, alertas STM32, heartbeat como ACK, roteamento de comandos via `stm32_cmd.c`.
+  - **31.4 — `verify_sleep_wake_uart.py`:** 18 testes de sleep/wake: timeout 30s STOP, wake por UART, wake por RFID, ciclo completo, light sleep ESP32.

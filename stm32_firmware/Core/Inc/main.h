@@ -31,6 +31,9 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "circular_buffer.h"
+#include "rfid_parser.h"
+#include "battery_monitor.h"
 
 /* USER CODE END Includes */
 
@@ -66,22 +69,9 @@ void Error_Handler(void);
 #define BUZZER_PIN GPIO_PIN_6
 #define BUZZER_PORT GPIOB
 
-#define RFID_BUFFER_SIZE 128
 #define CMD_BUFFER_SIZE 256
-#define BATTERY_CRITICAL_THRESHOLD 15.0f
-
-typedef struct {
-    uint8_t raw_data[RFID_BUFFER_SIZE];
-    uint16_t head;
-    uint16_t tail;
-    uint8_t flag_new_data;
-} RFID_Buffer_t;
-
-typedef struct {
-    uint8_t data[CMD_BUFFER_SIZE];
-    uint16_t head;
-    uint16_t tail;
-} CMD_Buffer_t;
+#define HEARTBEAT_INTERVAL_MS 25000
+#define HEARTBEAT_FIRST_MS 5000
 
 typedef enum {
     BUZZER_NONE = 0,
@@ -89,12 +79,6 @@ typedef enum {
     BUZZER_LONG = 2,
     BUZZER_DOUBLE = 3
 } BuzzerPattern_t;
-
-void RFID_Process_YRM100(void);
-void RFID_Process_WL134(void);
-void Battery_Read(void);
-void reverse_str(char* str, int len);
-uint64_t hex_to_uint64(const char* hex_str);
 
 void Alerts_Init(void);
 void Alerts_CheckBattery(float voltage);
@@ -107,6 +91,21 @@ void Power_Sleep(void);
 void Power_Wake(void);
 uint8_t Power_IsSleeping(void);
 void Power_ActivityDetected(void);
+
+/* LED Status Definition */
+#define LED_STATUS_PORT GPIOB
+#define LED_STATUS_PIN GPIO_PIN_3
+
+/* Global Peripherals */
+extern ADC_HandleTypeDef hadc1;
+extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef huart3;
+extern UART_HandleTypeDef huart4;
+
+/* System and Command Prototypes */
+void SystemClock_Config(void);
+void Command_Process(void);
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

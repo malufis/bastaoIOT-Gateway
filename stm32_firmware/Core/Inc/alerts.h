@@ -38,6 +38,8 @@ void Alerts_CheckBattery(float voltage);
 void Alerts_ProcessCommand(const char* json);
 void Buzzer_Play(uint8_t pattern);
 void Buzzer_Stop(void);
+void Buzzer_Update(void);
 uint8_t Alerts_IsBatteryCritical(void);
+uint8_t Buzzer_IsActive(void);
 
 #endif // ALERTS_H

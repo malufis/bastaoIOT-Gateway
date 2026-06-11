@@ -101,6 +101,10 @@ typedef struct {
     float accel_x;
     float accel_y;
     float accel_z;
+    bool sim_present;        /**< Flag de presenca do chip SIM */
+    int active_sim_slot;     /**< Slot de chip ativo (0 ou 1) */
+    char sim_ccid[32];       /**< Identificador unico do chip SIM (ICCID) */
+    bool stm32_alive;        /**< STM32 responsivo (heartbeat recebido) */
 } bastao_device_status_t;
 
 /**
@@ -244,12 +248,21 @@ esp_err_t ble_mobile_load_network_config(void);
  */
 esp_err_t ble_mobile_save_network_config(const network_config_t *config);
 
+esp_err_t ble_mobile_process_network_json(const char *json);
+
 /**
- * @brief Processa JSON de configuracao de rede recebido do app.
- * @param json String JSON com campos de configuracao.
+ * @brief Processa JSON de configuracao de hardware recebido do app.
+ * @param json String JSON com campos de configuracao de hardware.
  * @return ESP_OK se processou com sucesso.
  */
-esp_err_t ble_mobile_process_network_json(const char *json);
+esp_err_t ble_mobile_process_hardware_json(const char *json);
+
+/**
+ * @brief Processa um JSON de configuracao (seja hardware ou rede) e persiste no NVS.
+ * @param json String JSON contendo as chaves de configuracao.
+ * @return ESP_OK se processado e salvo com sucesso.
+ */
+esp_err_t ble_mobile_process_config_json(const char *json);
 
 /**
  * @brief Aplica a configuracao de rede (reiniciei componentes).

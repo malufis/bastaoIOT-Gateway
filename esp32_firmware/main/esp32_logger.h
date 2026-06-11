@@ -1,9 +1,9 @@
 /**
  * @file esp32_logger.h
- * @brief Módulo de logging wireless para debug remoto
+ * @brief Modulo de logging wireless para debug remoto
  *
- * Permite visualização de logs via Telnet (Wi-Fi) e BLE GATT.
- * Útil para debug durante desenvolvimento em campo.
+ * Permite visualizacao de logs via Telnet (Wi-Fi) e BLE GATT.
+ * Util para debug durante desenvolvimento em campo.
  */
 #ifndef ESP32_LOGGER_H
 #define ESP32_LOGGER_H

@@ -1,6 +1,6 @@
 /**
  * @file esp_power.c
- * @brief Implementação do gerenciamento de energia do ESP32
+ * @brief Implementacao do gerenciamento de energia do ESP32
  */
 #include "esp_power.h"
 #include "esp_log.h"
@@ -10,6 +10,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "driver/gpio.h"
+#include "esp_wifi.h"
+#include "esp_bt.h"
 
 static const char *TAG = "ESP_POWER";
 
@@ -23,7 +26,7 @@ esp_err_t esp_power_init(void) {
     last_activity_tick = esp_timer_get_time();
     sleep_requested = 0;
     current_mode = ESP_POWER_MODE_ACTIVE;
-    ESP_LOGI(TAG, "Módulo de energia ESP32 inicializado.");
+    ESP_LOGI(TAG, "Modulo de energia ESP32 inicializado.");
     ESP_LOGI(TAG, "  - Light Sleep timeout: %lu us", ESP_POWER_LIGHT_SLEEP_TIMEOUT_US);
     ESP_LOGI(TAG, "  - Deep Sleep timeout: %lu us", ESP_POWER_DEEP_SLEEP_TIMEOUT_US);
     return ESP_OK;
@@ -53,7 +56,6 @@ void esp_power_enter_light_sleep(void) {
 
     esp_sleep_enable_timer_wakeup(active_timeout_us);
     esp_sleep_enable_uart_wakeup(CONFIG_ESP_CONSOLE_UART_NUM);
-    esp_sleep_enable_gpio_wakeup(GPIO_NUM_4, ESP_GPIO_WAKEUP_GPIO_HIGH);
 
     ESP_LOGI(TAG, "Entrando em light sleep...");
     esp_err_t ret = esp_light_sleep_start();
@@ -78,10 +80,9 @@ void esp_power_enter_deep_sleep(void) {
     ESP_LOGI(TAG, "RTC memory sera preservada para wake-up");
 
     esp_sleep_enable_timer_wakeup(ESP_POWER_DEEP_SLEEP_TIMEOUT_US);
-    esp_sleep_enable_gpio_wakeup(GPIO_NUM_4, ESP_GPIO_WAKEUP_GPIO_HIGH);
 
     esp_wifi_stop();
-    esp_bt_controller_disable(ESP_BT_MODE_IDLE);
+    esp_bt_controller_disable();
 
     esp_deep_sleep_start();
 }

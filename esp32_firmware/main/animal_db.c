@@ -1,8 +1,8 @@
 /**
  * @file animal_db.c
- * @brief Implementação do banco de dados local de animais do Bastão-ESP.
- * @details Este módulo é responsável por carregar e realizar buscas na
- *          base de dados de negócios (Fazenda, Lote, Animal) persistida na NVS.
+ * @brief Implementacao do banco de dados local de animais do Bastao-ESP.
+ * @details Este modulo e responsavel por carregar e realizar buscas na
+ *          base de dados de negocios (Fazenda, Lote, Animal) persistida na NVS.
  *
  * @author Antigravity Agent
  * @date 2026-05-20
@@ -22,8 +22,8 @@ esp_err_t animal_db_init(void) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("bastao_biz", NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Módulo de negócios não inicializado na NVS (bastao_biz).");
-        return ESP_OK; // Não é um erro impeditivo no boot
+        ESP_LOGW(TAG, "Modulo de negocios nao inicializado na NVS (bastao_biz).");
+        return ESP_OK; // Nao e um erro impeditivo no boot
     }
 
     size_t required_size = 0;
@@ -62,7 +62,7 @@ esp_err_t animal_db_lookup(const char *tag, animal_record_t *record_out) {
 
     char *json_str = malloc(required_size);
     if (json_str == NULL) {
-        ESP_LOGE(TAG, "Falha ao alocar memória (%d bytes) para carregar o JSON de negócios.", required_size);
+        ESP_LOGE(TAG, "Falha ao alocar memoria (%d bytes) para carregar o JSON de negocios.", required_size);
         nvs_close(handle);
         return ESP_ERR_NO_MEM;
     }
@@ -84,7 +84,7 @@ esp_err_t animal_db_lookup(const char *tag, animal_record_t *record_out) {
     }
 
     if (!cJSON_IsArray(root)) {
-        ESP_LOGE(TAG, "JSON de negócios não é um array válido.");
+        ESP_LOGE(TAG, "JSON de negocios nao e um array valido.");
         cJSON_Delete(root);
         return ESP_FAIL;
     }
@@ -129,6 +129,6 @@ esp_err_t animal_db_lookup(const char *tag, animal_record_t *record_out) {
         return ESP_OK;
     }
 
-    ESP_LOGD(TAG, "Tag %s não encontrada na base local.", tag);
+    ESP_LOGD(TAG, "Tag %s nao encontrada na base local.", tag);
     return ESP_ERR_NOT_FOUND;
 }

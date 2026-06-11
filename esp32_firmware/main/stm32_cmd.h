@@ -1,8 +1,8 @@
 /**
  * @file stm32_cmd.h
- * @brief Módulo de envio de comandos para o STM32 via UART2
+ * @brief Modulo de envio de comandos para o STM32 via UART2
  *
- * Responsável por enviar comandos de controle (buzzer, power, etc)
+ * Responsavel por enviar comandos de controle (buzzer, power, etc)
  * para o microcontrolador STM32G070CBTx.
  */
 #ifndef STM32_CMD_H

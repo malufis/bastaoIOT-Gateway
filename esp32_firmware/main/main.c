@@ -40,18 +40,6 @@
 
 static const char *TAG = "MAIN";
 
-/**
- * @brief Variaveis para loop de teste de integracao.
- * @warning ============================================================
- *          TEST CODE — REMOVER ANTES DA PRODUCAO
- *          ============================================================
- * Este loop injeta dados RFID ficticios a cada 5 minutos para validar
- * o pipeline MQTT sem depender do STM32. Deve ser removido quando o
- * STM32 estiver integrado e enviando dados reais.
- */
-static bool test_loop_enabled = true;
-static uint32_t test_loop_tick = 0;
-static stm32_data_t test_rfid;
 static simcom_gps_data_t gps_data;
 
 /**
@@ -314,7 +302,7 @@ void app_main(void) {
 
   // 2. Instancia a fila global compartilhada para trafego de dados recebidos do
   // STM32
-  stm32_data_queue = xQueueCreate(10, sizeof(stm32_data_t));
+  stm32_data_queue = xQueueCreate(20, sizeof(stm32_data_t));
   if (stm32_data_queue == NULL) {
     ESP_LOGE(TAG,
              "Falha critica ao criar a fila stm32_data_queue. Abortando...");
@@ -380,7 +368,6 @@ void app_main(void) {
     if (mqtt_publisher_task_start(4) != pdPASS) {
       ESP_LOGE(TAG, "Falha ao iniciar task de publicacao MQTT.");
     }
-    ESP_LOGI(TAG, "[TESTE] Loop de injecao RFID habilitado (a cada 5min). Remover antes da producao!");
   } else {
     ESP_LOGE(TAG, "Falha ao inicializar cliente MQTT.");
   }
@@ -423,31 +410,11 @@ void app_main(void) {
     bastao_current_status.mqtt_connected = mqtt_publisher_is_connected();
     ble_mobile_update_status(&bastao_current_status);
 
-    // ================================================================
-    // TEST CODE — Loop de injecao de RFID para validacao de integracao
-    // REMOVER quando STM32 estiver enviando dados reais.
-    // Disparo inicial imediato + repeticoes a cada 5 minutos (300s).
-    // ================================================================
-    if (test_loop_enabled && bastao_current_status.mqtt_connected) {
-      bool should_send = false;
-      if (test_loop_tick == 0) {
-        should_send = true;
-      } else if (test_loop_tick >= 300) {
-        test_loop_tick = 1;
-        should_send = true;
-      }
-      if (should_send) {
-        memset(&test_rfid, 0, sizeof(test_rfid));
-        test_rfid.type = DATA_TYPE_RFID;
-        test_rfid.movement = 1;
-        strcpy(test_rfid.model, "TESTE");
-        strcpy(test_rfid.tag, "BRINCO_INTEGRACAO_001");
-        if (stm32_data_queue != NULL) {
-          xQueueSend(stm32_data_queue, &test_rfid, 0);
-          ESP_LOGI(TAG, "[TESTE] RFID injetado: BRINCO_INTEGRACAO_001 (prox em 5min)");
-        }
-      }
-      test_loop_tick++;
+    if (!stm32_uart_is_stm32_alive()) {
+        bastao_current_status.stm32_alive = 0;
+        ESP_LOGW(TAG, "STM32 sem resposta. Verificar conexao UART.");
+    } else {
+        bastao_current_status.stm32_alive = 1;
     }
 
     // Leitura periodica do GPS (a cada 30s, quando o modem esta em modo AT)

@@ -1,9 +1,9 @@
 /**
  * @file wifi_driver.c
- * @brief Implementação do driver Wi-Fi no modo Station (STA) do ESP32.
- * @details Este módulo implementa a inicialização do stack de Wi-Fi no ESP32,
+ * @brief Implementacao do driver Wi-Fi no modo Station (STA) do ESP32.
+ * @details Este modulo implementa a inicializacao do stack de Wi-Fi no ESP32,
  *          o registro dos tratadores de eventos de IP e rede, e realiza a
- *          comutação automática da conexão celular PPP para fins de redundância.
+ *          comutacao automatica da conexao celular PPP para fins de redundancia.
  *
  * @author Antigravity Agent
  * @date 2026-05-20
@@ -30,38 +30,29 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         is_connected = false;
-        ESP_LOGW(TAG, "Wi-Fi desconectado ou sinal perdido. Solicitando reconexão e reativando celular...");
-        
-        // 1. Reativa a conectividade celular via modem SIMCom
-        simcom_ppp_set_suspended(false);
-        
-        // 2. Tenta reconectar ao AP sem fio
-        esp_wifi_connect();
+        ESP_LOGW(TAG, "Wi-Fi desconectado ou sinal perdido.");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "Wi-Fi conectado com sucesso! Endereço IP alocado: " IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "Wi-Fi conectado com sucesso! Endereco IP alocado: " IPSTR, IP2STR(&event->ip_info.ip));
         is_connected = true;
-        
-        // 1. Suspende a conectividade celular (desconecta PPP) para poupar energia/dados
-        simcom_ppp_set_suspended(true);
     }
 }
 
 esp_err_t wifi_driver_init(void) {
     ESP_LOGI(TAG, "Inicializando Wi-Fi STA...");
 
-    // Cria a netif padrão para o cliente Wi-Fi Station
+    // Cria a netif padrao para o cliente Wi-Fi Station
     wifi_netif = esp_netif_create_default_wifi_sta();
     if (wifi_netif == NULL) {
-        ESP_LOGE(TAG, "Erro ao criar interface de rede padrão Wi-Fi STA.");
+        ESP_LOGE(TAG, "Erro ao criar interface de rede padrao Wi-Fi STA.");
         return ESP_FAIL;
     }
 
-    // Inicializa Wi-Fi com a configuração padrão
+    // Inicializa Wi-Fi com a configuracao padrao
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t ret = esp_wifi_init(&cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Falha na inicialização do Wi-Fi (%s).", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Falha na inicializacao do Wi-Fi (%s).", esp_err_to_name(ret));
         return ret;
     }
 
@@ -77,7 +68,7 @@ esp_err_t wifi_driver_init(void) {
                                                         NULL,
                                                         NULL));
 
-    // Configura armazenamento temporário em RAM para credenciais
+    // Configura armazenamento temporario em RAM para credenciais
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     
@@ -106,4 +97,9 @@ esp_err_t wifi_driver_connect(const char *ssid, const char *password) {
 
 bool wifi_driver_is_connected(void) {
     return is_connected;
+}
+
+esp_err_t wifi_driver_disconnect(void) {
+    ESP_LOGI(TAG, "Solicitando desconexao do Wi-Fi...");
+    return esp_wifi_disconnect();
 }

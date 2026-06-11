@@ -1,6 +1,6 @@
 /**
  * @file stm32_cmd.c
- * @brief Implementação do módulo de comandos para o STM32
+ * @brief Implementacao do modulo de comandos para o STM32
  */
 #include "stm32_cmd.h"
 #include "stm32_uart.h"
@@ -10,7 +10,7 @@
 static const char *TAG = "STM32_CMD";
 
 esp_err_t stm32_cmd_init(void) {
-    ESP_LOGI(TAG, "Módulo de comandos STM32 inicializado.");
+    ESP_LOGI(TAG, "Modulo de comandos STM32 inicializado.");
     return ESP_OK;
 }
 

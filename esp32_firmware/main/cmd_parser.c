@@ -1,11 +1,12 @@
 /**
  * @file cmd_parser.c
- * @brief Implementação do parser de comandos MQTT
+ * @brief Implementacao do parser de comandos MQTT
  */
 #include "cmd_parser.h"
 #include "stm32_cmd.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "ota_manager.h"
 #include <string.h>
 
 static const char *TAG = "CMD_PARSER";
@@ -30,7 +31,7 @@ void cmd_parser_process_message(const char *topic, const char *payload) {
 
     cJSON *cmd_item = cJSON_GetObjectItem(json, "cmd");
     if (cmd_item == NULL || !cJSON_IsString(cmd_item)) {
-        ESP_LOGW(TAG, "Campo 'cmd' não encontrado no JSON");
+        ESP_LOGW(TAG, "Campo 'cmd' nao encontrado no JSON");
         cJSON_Delete(json);
         return;
     }
@@ -73,7 +74,7 @@ void cmd_parser_process_message(const char *topic, const char *payload) {
         cJSON *url_item = cJSON_GetObjectItem(json, "url");
         if (url_item != NULL && cJSON_IsString(url_item)) {
             ESP_LOGI(TAG, "Comando OTA recebido, URL: %s", url_item->valuestring);
-            // O OTA manager deve tratar este comando
+            ota_manager_start(url_item->valuestring);
         }
     }
     else {

@@ -1,6 +1,6 @@
 /**
  * @file esp32_logger.c
- * @brief Implementação do módulo de logging wireless para debug remoto
+ * @brief Implementacao do modulo de logging wireless para debug remoto
  */
 #include "esp32_logger.h"
 #include "esp_log.h"
@@ -24,7 +24,9 @@ static uint32_t dropped_count = 0;
 
 static QueueHandle_t log_queue = NULL;
 static TaskHandle_t telnet_task_handle = NULL;
-static TaskHandle_t ble_task_handle = NULL;
+// static TaskHandle_t ble_task_handle = NULL;
+
+static void log_processor_task(void *pvParameters);
 
 static int telnet_server_sock = -1;
 static int telnet_client_socks[LOG_MAX_CLIENTS];
@@ -57,7 +59,7 @@ static void format_log_entry(char *buf, size_t buf_size, const log_entry_t *entr
 
     snprintf(buf, buf_size,
              "[%02u:%02u:%02u.%03u][%s%s%s][%s] %s",
-             hours, mins, sec, ms,
+             (unsigned int)hours, (unsigned int)mins, (unsigned int)sec, (unsigned int)ms,
              level_color_escape[entry->level],
              level_strings[entry->level],
              level_reset,
@@ -93,10 +95,12 @@ static void broadcast_to_telnet(const char *formatted_msg) {
     }
 }
 
+/*
 static void broadcast_to_ble(const char *formatted_msg) {
-    // Será integrado com ble_mobile_notify_log() posteriormente
+    // Sera integrado com ble_mobile_notify_log() posteriormente
     ESP_LOGD(TAG, "[BLE_LOG] %s", formatted_msg);
 }
+*/
 
 esp_err_t esp_logger_init(void) {
     log_queue = xQueueCreate(64, sizeof(log_entry_t));
@@ -113,6 +117,12 @@ esp_err_t esp_logger_init(void) {
     log_buffer_count = 0;
     msg_count = 0;
     dropped_count = 0;
+
+    BaseType_t ret = xTaskCreate(log_processor_task, "log_processor", 4096, NULL, 3, NULL);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Falha ao criar task processadora de logs");
+        return ESP_FAIL;
+    }
 
     ESP_LOGI(TAG, "Logger wireless inicializado. Nivel: %s",
              level_strings[current_log_level]);
@@ -179,7 +189,7 @@ static void telnet_task(void *pvParameters) {
 
         if (free_slot >= 0) {
             telnet_client_socks[free_slot] = client_sock;
-            char *welcome = "\r\n=== Bastão-ESP Telnet Debug ===\r\nDigite 'help' para comandos\r\n\r\n";
+            char *welcome = "\r\n=== Bastao-ESP Telnet Debug ===\r\nDigite 'help' para comandos\r\n\r\n";
             send(client_sock, welcome, strlen(welcome), 0);
 
             char client_ip[16];
@@ -318,7 +328,7 @@ esp_err_t esp_logger_dump_to_file(const char *path) {
     char formatted[384];
     size_t entry_size = sizeof(log_entry_t);
 
-    fprintf(f, "=== Bastão-ESP Log Dump ===\n");
+    fprintf(f, "=== Bastao-ESP Log Dump ===\n");
     fprintf(f, "Total mensagens: %lu, Descartadas: %lu\n\n",
             (unsigned long)msg_count, (unsigned long)dropped_count);
 

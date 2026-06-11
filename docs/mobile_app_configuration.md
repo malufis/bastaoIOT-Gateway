@@ -10,7 +10,9 @@
 | 0xFF02 | Config Read (Bastão → App) | ✅ Implementado |
 | 0xFF03 | Business Write (Fazenda/Lote/Animal) | ✅ Implementado |
 | 0xFF04 | Last Tag Notify | ✅ Implementado |
-| 0xFF05 | Device Status Read | ✅ Implementado |
+| 0xFF05 | Device Status Read (Bateria, GPS, Movimento, SIM status) | ✅ Implementado |
+| 0xFF06 | Cellular Status Read/Notify (Sinal, Tecnologia, Operador) | ✅ Implementado |
+| 0xFF07 | Debug Logger BLE (Streaming de Logs em Tempo Real) | ✅ Implementado |
 
 ### 1.2 Dados de Configuração Salvos no NVS
 
@@ -21,6 +23,18 @@
 | Intervalo bateria | `battery_report_interval` | uint8 | ✅ Implementado |
 | WL-134 habilitado | `wl134_enabled` | bool | ✅ Implementado |
 | YRM100 habilitado | `yrm100_enabled` | bool | ✅ Implementado |
+| SSID Wi-Fi | `wifi_ssid` | string | ✅ Implementado |
+| Senha Wi-Fi | `wifi_pass` | string | ✅ Implementado |
+| Wi-Fi habilitado | `wifi_en` | bool | ✅ Implementado |
+| APN Celular | `apn` | string | ✅ Implementado |
+| Usuário APN | `apn_user` | string | ✅ Implementado |
+| Senha APN | `apn_pass` | string | ✅ Implementado |
+| Celular habilitado | `cell_en` | bool | ✅ Implementado |
+| Broker MQTT URI | `mqtt_uri` | string | ✅ Implementado |
+| Cliente MQTT ID | `mqtt_client` | string | ✅ Implementado |
+| MQTT Tópico Telemetria | `mqtt_tele` | string | ✅ Implementado |
+| MQTT Tópico GPS | `mqtt_gps` | string | ✅ Implementado |
+| Modo de Rede (Auto/WiFi/Cell) | `net_mode` | uint8 | ✅ Implementado |
 | Dados da Fazenda | `farm_data` | JSON | ✅ Implementado |
 | Dados do Lote | `lot_data` | JSON | ✅ Implementado |
 | Dados dos Animais | `animal_data` | JSON | ✅ Implementado |
@@ -51,20 +65,20 @@ static const mqtt_publisher_config_t default_mqtt_config = {
 };
 ```
 
-### 2.2 O que FALTA configurar via App
+### 2.2 Configuração de Rede via App (Implementado)
 
 | Dado | Necessário | Status |
 |------|------------|--------|
-| SSID Wi-Fi | ✅ Sim | ❌ Falta |
-| Senha Wi-Fi | ✅ Sim | ❌ Falta |
-| APN | ✅ Sim | ❌ Falta |
-| Usuário APN | ✅ Sim | ❌ Falta |
-| Senha APN | ✅ Sim | ❌ Falta |
-| Broker MQTT URI | ✅ Sim | ❌ Falta |
-| MQTT Tópico Telemetria | ✅ Sim | ❌ Falta |
-| MQTT Tópico GPS | ✅ Sim | ❌ Falta |
-| Cliente MQTT ID | ✅ Sim | ❌ Falta |
-| Modo de rede (Wi-Fi/Celular) | ✅ Sim | ❌ Falta |
+| SSID Wi-Fi | ✅ Sim | ✅ Concluído |
+| Senha Wi-Fi | ✅ Sim | ✅ Concluído |
+| APN Celular | ✅ Sim | ✅ Concluído |
+| Usuário APN | ✅ Sim | ✅ Concluído |
+| Senha APN | ✅ Sim | ✅ Concluído |
+| Broker MQTT URI | ✅ Sim | ✅ Concluído |
+| MQTT Tópico Telemetria | ✅ Sim | ✅ Concluído |
+| MQTT Tópico GPS | ✅ Sim | ✅ Concluído |
+| Cliente MQTT ID | ✅ Sim | ✅ Concluído |
+| Modo de rede (Wi-Fi/Celular/Auto) | ✅ Sim | ✅ Concluído |
 
 ---
 
@@ -84,9 +98,11 @@ static const mqtt_publisher_config_t default_mqtt_config = {
     "apn_user": "vivo",
     "apn_password": "vivo",
     "enabled": true
-  }
+  },
+  "mode": 3
 }
 ```
+*Modos: 0 (WiFi Only), 1 (Cellular Only), 2 (WiFi/Cellular Dual), 3 (Auto)*
 
 ### 3.2 Tela de Configurações MQTT
 
@@ -117,69 +133,80 @@ static const mqtt_publisher_config_t default_mqtt_config = {
 
 ---
 
-## 4. Recomendação de Implementação
+## 4. Estrutura de Configuração e NVS no Código (ble_mobile.h)
 
-### 4.1 Alterações necessárias no ble_mobile.h
-
-Adicionar novas chaves NVS:
+### 4.1 Chaves NVS Mapeadas
 ```c
-#define NVS_KEY_WIFI_SSID       "wifi_ssid"
-#define NVS_KEY_WIFI_PASSWORD  "wifi_pass"
-#define NVS_KEY_APN            "apn"
-#define NVS_KEY_APN_USER      "apn_user"
-#define NVS_KEY_APN_PASSWORD  "apn_pass"
-#define NVS_KEY_MQTT_URI       "mqtt_uri"
-#define NVS_KEY_MQTT_CLIENT    "mqtt_client"
+#define NVS_NAMESPACE_CONFIG     "bastao_cfg"
+#define NVS_KEY_YRM100_POWER     "yrm_power"
+#define NVS_KEY_SCAN_TIME        "scan_time"
+#define NVS_KEY_WIFI_SSID        "wifi_ssid"
+#define NVS_KEY_WIFI_PASSWORD    "wifi_pass"
+#define NVS_KEY_WIFI_ENABLED     "wifi_en"
+#define NVS_KEY_APN              "apn"
+#define NVS_KEY_APN_USER         "apn_user"
+#define NVS_KEY_APN_PASSWORD     "apn_pass"
+#define NVS_KEY_CELLULAR_ENABLED "cell_en"
+#define NVS_KEY_MQTT_URI         "mqtt_uri"
+#define NVS_KEY_MQTT_CLIENT_ID   "mqtt_client"
+#define NVS_KEY_MQTT_TOPIC_TELE  "mqtt_tele"
+#define NVS_KEY_MQTT_TOPIC_GPS   "mqtt_gps"
+#define NVS_KEY_NETWORK_MODE     "net_mode"
 ```
 
-### 4.2 Nova estrutura de configuração
-
+### 4.2 Estrutura de Dados
 ```c
 typedef struct {
-    char wifi_ssid[32];
-    char wifi_password[64];
-    bool wifi_enabled;
-
-    char apn[64];
-    char apn_user[32];
-    char apn_password[32];
-    bool cellular_enabled;
-
-    char mqtt_broker[128];
-    char mqtt_client_id[32];
-    char mqtt_topic_telemetry[64];
-    char mqtt_topic_gps[64];
+    wifi_config_t wifi;
+    cellular_config_t cellular;
+    mqtt_config_t mqtt;
+    network_mode_t mode;
 } network_config_t;
 ```
 
 ---
 
-## 5. Resumo - O que está no Roadmap
+## 5. Status do Roadmap de Configuração
 
-| Item | Status no Roadmap | Prioridade |
-|------|-------------------|------------|
-| GATT Server BLE | ✅ Phase 11 (concluído) | - |
-| Dados de negócio (Farm/Lote/Animal) | ✅ Phase 11 (concluído) | - |
-| SSID/Senha Wi-Fi | ❌ Não está no roadmap | ALTA |
-| APN configuração | ❌ Não está no roadmap | ALTA |
-| Broker MQTT | ❌ Não está no roadmap | ALTA |
-| Seleção de rede (Wi-Fi/Celular) | ⚠️ Phase 14 (parcial) | MÉDIA |
-
----
-
-## 6. Ação Necessária
-
-O projeto precisa de uma nova fase para **configuração de rede via aplicativo**:
-
-### Phase 21 sugerida: Configuração de Rede via App Mobile
-
-- [ ] Adicionarchar wifi_ssid/senha ao ble_mobile
-- [ ] Adicionar APN ao ble_mobile
-- [ ] Adicionar MQTT ao ble_mobile
-- [ ] Criar sistema de apply de config (reiniciei componentes quando receber novo config)
-- [ ] Testar configuração via app
+| Item | Status no Roadmap | Detalhes |
+|------|-------------------|----------|
+| GATT Server BLE | ✅ Concluído | Serviços e características 0xFF01-0xFF07 operacionais. |
+| Dados de negócio (Farm/Lote/Animal) | ✅ Concluído | Lookup local enriquecido. |
+| Configuração de SSID/Senha Wi-Fi | ✅ Concluído | Persistência na NVS via JSON BLE. |
+| APN de Celular | ✅ Concluído | Configuração dinâmica do chip. |
+| Parâmetros de Broker MQTT | ✅ Concluído | Tópicos e Broker configurados pelo App. |
+| Modo de Rede (Auto/WiFi/Cellular) | ✅ Concluído | Comutação dinâmica no loop do main.c. |
 
 ---
 
-*Documento gerado em: 2026-05-20*
-*Versão: 1.0*
+## 6. Histórico de Implementação
+
+Todas as configurações são recebidas via pacotes JSON pela característica GATT `0xFF01` ou pelo tópico MQTT `id/<ID>/config` (onde `<ID>` é o IMEI do modem celular), gravadas de forma atômica no armazenamento NVS Flash do ESP32 e aplicadas imediatamente via `ble_mobile_apply_network_config()`, reiniciando os subsistemas de conectividade correspondentes (reconectando Wi-Fi, reiniciando o publisher MQTT ou alterando a suspensão do modem celular).
+
+---
+
+## 7. Métricas Celulares Estendidas e Backup SMS (Fase 26) ✅
+
+### 7.1 Métricas de Sinal Estendidas (GATT 0xFF06 / JSON)
+A característica GATT `0xFF06` e os status JSON foram estendidos para retornar informações de antenas LTE quando disponíveis:
+- **RSRP (Reference Signal Received Power):** Sinal em dBm.
+- **RSRQ (Reference Signal Received Quality):** Qualidade em dB.
+- **SINR (Signal-to-Interference-plus-Noise Ratio):** Razão sinal-ruído em dB.
+- **CEER (Extended Error Report):** Mensagem textual de log de erro de rede gerada pelo modem celular.
+
+Para evitar interrupções de dados, o driver utiliza **cacheamento automático**. Se a sessão celular PPP estiver ativa, os dados de antena retornados são os últimos valores salvos em cache; se o link estiver offline (modo de comandos AT), uma consulta direta de rádio (`AT+CPSI?` e `AT+CEER`) é feita em tempo real.
+
+### 7.2 Motor de SMS de Contingência (Backup)
+Quando a conexão de dados PPP está inativa, o watchdog de conectividade no ESP32 executa o polling do modem para ler mensagens não lidas (`AT+CMGL="REC UNREAD"`).
+Os seguintes comandos são aceitos (tanto em texto plano quanto em formato JSON `{"cmd": "..."}`):
+1. **BUZZER:** Aciona padrão de bipe duplo no buzzer do STM32.
+2. **RFID ON / RFID OFF:** Liga/desliga o driver e alimentação física do leitor RFID.
+3. **STATUS:** Retorna SMS com a telemetria atual do Bastão (tensão da bateria, status PPP/MQTT, contagem de tags lidas, chip SIM ativo, CCID e coordenadas de GPS com fix).
+4. **RESTART:** Envia confirmação e reinicia o ESP32 (`esp_restart()`).
+
+Após o processamento de cada mensagem, ela é removida da memória do modem (`AT+CMGD`) para liberar espaço de armazenamento.
+
+---
+
+*Documento atualizado em: 2026-05-21*
+*Versão: 2.1*

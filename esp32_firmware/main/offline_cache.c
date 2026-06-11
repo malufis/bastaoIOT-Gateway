@@ -1,9 +1,9 @@
 /**
  * @file offline_cache.c
- * @brief Implementação do gerenciador de cache offline e spooler FIFO.
- * @details Este módulo implementa a montagem de partição SPIFFS, a busca por
- *          arquivos órfãos para inicialização dos ponteiros de leitura/escrita,
- *          o controle de capacidade (limite de 95%) e a tarefa de sincronização.
+ * @brief Implementacao do gerenciador de cache offline e spooler FIFO.
+ * @details Este modulo implementa a montagem de particao SPIFFS, a busca por
+ *          arquivos orfaos para inicializacao dos ponteiros de leitura/escrita,
+ *          o controle de capacidade (limite de 95%) e a tarefa de sincronizacao.
  *
  * @author Antigravity Agent
  * @date 2026-05-20
@@ -23,12 +23,12 @@
 
 static const char *TAG = "OFFLINE_CACHE";
 
-/* --- Variáveis de Estado Interno --- */
-static int read_index = 0;  /**< Índice do arquivo de leitura mais antigo (FIFO) */
-static int write_index = 0; /**< Índice para a gravação do próximo arquivo (FIFO) */
+/* --- Variaveis de Estado Interno --- */
+static int read_index = 0;  /**< Indice do arquivo de leitura mais antigo (FIFO) */
+static int write_index = 0; /**< Indice para a gravacao do proximo arquivo (FIFO) */
 static bool is_spiffs_mounted = false;
 
-/* --- Declaração de Funções Privadas --- */
+/* --- Declaracao de Funcoes Privadas --- */
 static void offline_cache_sync_task(void *pvParameters);
 
 esp_err_t offline_cache_init(void) {
@@ -46,9 +46,9 @@ esp_err_t offline_cache_init(void) {
         if (ret == ESP_FAIL) {
             ESP_LOGE(TAG, "Falha ao montar ou formatar o SPIFFS.");
         } else if (ret == ESP_ERR_NOT_FOUND) {
-            ESP_LOGE(TAG, "Partição SPIFFS não encontrada no mapa de partições.");
+            ESP_LOGE(TAG, "Particao SPIFFS nao encontrada no mapa de particoes.");
         } else {
-            ESP_LOGE(TAG, "Falha na inicialização do SPIFFS (%s).", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "Falha na inicializacao do SPIFFS (%s).", esp_err_to_name(ret));
         }
         return ret;
     }
@@ -63,10 +63,10 @@ esp_err_t offline_cache_init(void) {
                  total, used, (double)used / total * 100.0);
     }
 
-    // Escaneia a pasta para descobrir arquivos e reestabelecer o índice FIFO
+    // Escaneia a pasta para descobrir arquivos e reestabelecer o indice FIFO
     DIR *dir = opendir(SPIFFS_BASE_PATH);
     if (!dir) {
-        ESP_LOGE(TAG, "Falha ao abrir diretório %s para escanear cache.", SPIFFS_BASE_PATH);
+        ESP_LOGE(TAG, "Falha ao abrir diretorio %s para escanear cache.", SPIFFS_BASE_PATH);
         return ESP_FAIL;
     }
 
@@ -116,8 +116,8 @@ esp_err_t offline_cache_write(const char *payload) {
     esp_err_t ret = esp_spiffs_info(NULL, &total, &used);
     if (ret == ESP_OK) {
         if (used >= (total * 95 / 100)) {
-            ESP_LOGE(TAG, "Espaço em flash crítico (>=95%%). Escrita no cache bloqueada!");
-            // Sinalização audível/visual seria acionada aqui
+            ESP_LOGE(TAG, "Espaco em flash critico (>=95%%). Escrita no cache bloqueada!");
+            // Sinalizacao audivel/visual seria acionada aqui
             // Ex: buzzer_trigger_alert();
             return ESP_ERR_NO_MEM;
         }
@@ -169,7 +169,7 @@ esp_err_t offline_cache_read_next(char *payload_out, size_t max_len) {
         return ESP_ERR_NOT_FOUND;
     }
 
-    // Lê até preencher o buffer ou até EOF
+    // Le ate preencher o buffer ou ate EOF
     size_t bytes_read = fread(payload_out, 1, max_len - 1, f);
     payload_out[bytes_read] = '\0';
     fclose(f);
@@ -189,7 +189,7 @@ esp_err_t offline_cache_pop(void) {
     char filepath[64];
     snprintf(filepath, sizeof(filepath), "%s%d%s", CACHE_FILE_PREFIX, read_index, CACHE_FILE_SUFFIX);
 
-    // Remove o arquivo físico
+    // Remove o arquivo fisico
     if (unlink(filepath) != 0) {
         ESP_LOGE(TAG, "Erro ao remover arquivo de cache: %s", filepath);
     } else {
@@ -198,9 +198,9 @@ esp_err_t offline_cache_pop(void) {
 
     read_index++;
 
-    // Reinicia índices para evitar crescer indefinidamente se o buffer esvaziar
+    // Reinicia indices para evitar crescer indefinidamente se o buffer esvaziar
     if (read_index == write_index) {
-        ESP_LOGI(TAG, "Cache de dados esvaziado. Reiniciando índices.");
+        ESP_LOGI(TAG, "Cache de dados esvaziado. Reiniciando indices.");
         read_index = 0;
         write_index = 0;
     }
@@ -218,47 +218,47 @@ esp_err_t offline_cache_sync_task_start(int priority) {
 }
 
 /**
- * @brief Task FreeRTOS de monitoramento e sincronização em background.
- * @details Executa ciclicamente e, ao detectar conexão MQTT ativa, consome
+ * @brief Task FreeRTOS de monitoramento e sincronizacao em background.
+ * @details Executa ciclicamente e, ao detectar conexao MQTT ativa, consome
  *          as mensagens pendentes no cache FIFO local e as enfileira para envio.
  */
 static void offline_cache_sync_task(void *pvParameters) {
     char buf[MQTT_PAYLOAD_MAX_LEN];
-    ESP_LOGI(TAG, "Task de sincronização de cache iniciada.");
+    ESP_LOGI(TAG, "Task de sincronizacao de cache iniciada.");
 
     while (1) {
-        // Só tenta descarregar se estivermos conectados ao MQTT e o cache tiver mensagens
+        // So tenta descarregar se estivermos conectados ao MQTT e o cache tiver mensagens
         if (mqtt_publisher_is_connected() && !offline_cache_is_empty()) {
-            ESP_LOGI(TAG, "Conexão restabelecida. Iniciando escoamento do cache offline...");
+            ESP_LOGI(TAG, "Conexao restabelecida. Iniciando escoamento do cache offline...");
 
             while (mqtt_publisher_is_connected() && !offline_cache_is_empty()) {
                 memset(buf, 0, sizeof(buf));
                 esp_err_t err = offline_cache_read_next(buf, sizeof(buf));
                 if (err == ESP_OK) {
-                    // Envia para o tópico de telemetria
+                    // Envia para o topico de telemetria
                     err = mqtt_publisher_enqueue("bastao/telemetria", buf, 1);
                     if (err == ESP_OK) {
-                        // Remove do cache apenas após enfileirar com sucesso
+                        // Remove do cache apenas apos enfileirar com sucesso
                         offline_cache_pop();
-                        // Aguarda um pequeno delay para não saturar a fila local do MQTT
+                        // Aguarda um pequeno delay para nao saturar a fila local do MQTT
                         vTaskDelay(200 / portTICK_PERIOD_MS);
                     } else {
                         ESP_LOGW(TAG, "Falha ao reinserir mensagem no publicador MQTT. Tentando novamente mais tarde.");
                         break;
                     }
                 } else if (err == ESP_ERR_NOT_FOUND) {
-                    // Arquivo físico não pôde ser aberto (corrompido/inexistente)
-                    // Avança o pop para não travar a fila
+                    // Arquivo fisico nao pode ser aberto (corrompido/inexistente)
+                    // Avanca o pop para nao travar a fila
                     offline_cache_pop();
                 } else {
-                    ESP_LOGE(TAG, "Erro crítico ao ler próximo registro de cache: %d", err);
+                    ESP_LOGE(TAG, "Erro critico ao ler proximo registro de cache: %d", err);
                     break;
                 }
             }
-            ESP_LOGI(TAG, "Escoamento de cache concluído ou interrompido.");
+            ESP_LOGI(TAG, "Escoamento de cache concluido ou interrompido.");
         }
 
-        // Delay de verificação do status
+        // Delay de verificacao do status
         vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
 }

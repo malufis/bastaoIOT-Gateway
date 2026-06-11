@@ -1,9 +1,9 @@
 /**
  * @file offline_cache.h
  * @brief Gerenciador de cache offline e spooler FIFO na flash local (SPIFFS).
- * @details Este módulo gerencia o salvamento persistente de payloads JSON criptografados
- *          quando não há conectividade com a rede/broker MQTT, permitindo posterior
- *          sincronização.
+ * @details Este modulo gerencia o salvamento persistente de payloads JSON criptografados
+ *          quando nao ha conectividade com a rede/broker MQTT, permitindo posterior
+ *          sincronizacao.
  *
  * @author Antigravity Agent
  * @date 2026-05-20
@@ -21,10 +21,10 @@
 #define CACHE_FILE_SUFFIX ".json"
 
 /**
- * @brief Inicializa o sistema de arquivos SPIFFS e calcula os índices FIFO de leitura/escrita
+ * @brief Inicializa o sistema de arquivos SPIFFS e calcula os indices FIFO de leitura/escrita
  *        escaneando os arquivos existentes.
  * 
- * @return esp_err_t ESP_OK em caso de sucesso, ou código de erro pertinente.
+ * @return esp_err_t ESP_OK em caso de sucesso, ou codigo de erro pertinente.
  */
 esp_err_t offline_cache_init(void);
 
@@ -32,18 +32,18 @@ esp_err_t offline_cache_init(void);
  * @brief Salva um payload no cache offline (fim da fila FIFO).
  * 
  * @param[in] payload String contendo o payload serializado (JSON criptografado em hex).
- * @return esp_err_t ESP_OK em caso de sucesso, ESP_ERR_NO_MEM se a memória estiver cheia (>95%),
- *                   ou outro código de erro se a escrita falhar.
+ * @return esp_err_t ESP_OK em caso de sucesso, ESP_ERR_NO_MEM se a memoria estiver cheia (>95%),
+ *                   ou outro codigo de erro se a escrita falhar.
  */
 esp_err_t offline_cache_write(const char *payload);
 
 /**
- * @brief Obtém o payload mais antigo do cache offline (início da fila FIFO).
+ * @brief Obtem o payload mais antigo do cache offline (inicio da fila FIFO).
  * 
  * @param[out] payload_out Buffer para armazenar o payload lido.
- * @param[in] max_len Tamanho máximo do buffer payload_out.
+ * @param[in] max_len Tamanho maximo do buffer payload_out.
  * @return esp_err_t ESP_OK se encontrou e leu, ESP_ERR_NOT_FOUND se o cache estiver vazio,
- *                   ou outro código de erro em caso de falha de leitura.
+ *                   ou outro codigo de erro em caso de falha de leitura.
  */
 esp_err_t offline_cache_read_next(char *payload_out, size_t max_len);
 
@@ -55,15 +55,15 @@ esp_err_t offline_cache_read_next(char *payload_out, size_t max_len);
 esp_err_t offline_cache_pop(void);
 
 /**
- * @brief Verifica se o cache offline está vazio.
+ * @brief Verifica se o cache offline esta vazio.
  * 
- * @return true Se não há elementos no cache.
+ * @return true Se nao ha elementos no cache.
  * @return false Se existem elementos a serem lidos e sincronizados.
  */
 bool offline_cache_is_empty(void);
 
 /**
- * @brief Inicia a tarefa assíncrona do FreeRTOS encarregada de sincronizar os dados do cache
+ * @brief Inicia a tarefa assincrona do FreeRTOS encarregada de sincronizar os dados do cache
  *        com o broker MQTT quando a rede estiver conectada.
  * 
  * @param[in] priority Prioridade da task.

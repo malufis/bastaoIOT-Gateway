@@ -1,9 +1,9 @@
 /**
  * @file stm32_uart.h
- * @brief Cabeçalho do módulo de recepção UART para comunicação com o microcontrolador STM32.
- * @details Este módulo é responsável por definir os tipos de dados recebidos do STM32,
- *          definir a pinagem e parâmetros da interface serial UART1 do ESP32 e declarar
- *          as rotinas públicas para inicialização do driver e ativação da task de leitura.
+ * @brief Cabecalho do modulo de recepcao UART para comunicacao com o microcontrolador STM32.
+ * @details Este modulo e responsavel por definir os tipos de dados recebidos do STM32,
+ *          definir a pinagem e parametros da interface serial UART1 do ESP32 e declarar
+ *          as rotinas publicas para inicializacao do driver e ativacao da task de leitura.
  * 
  * @author Antigravity Agent
  * @date 2026-05-19
@@ -20,9 +20,9 @@
 extern "C" {
 #endif
 
-/* --- Definições de Configuração Física --- */
+/* --- Definicoes de Configuracao Fisica --- */
 
-/** @brief Porta UART utilizada para comunicação com o STM32. */
+/** @brief Porta UART utilizada para comunicacao com o STM32. */
 #define STM32_UART_PORT      UART_NUM_1
 
 /** 
@@ -37,22 +37,24 @@ extern "C" {
  */
 #define STM32_UART_TX_PIN    GPIO_NUM_14
 
-/** @brief Velocidade da comunicação serial (Baud Rate). */
+/** @brief Velocidade da comunicacao serial (Baud Rate). */
 #define STM32_UART_BAUD_RATE 115200
 
-/** @brief Tamanho do buffer de recepção serial em bytes. */
+/** @brief Tamanho do buffer de recepcao serial em bytes. */
 #define STM32_UART_BUF_SIZE  1024
 
 /* --- Estruturas de Dados e Tipos --- */
 
 /**
- * @brief Enumeração representando os tipos de dados reportados pelo STM32.
+ * @brief Enumeracao representando os tipos de dados reportados pelo STM32.
  */
 typedef enum {
-    DATA_TYPE_RFID,     /**< Leitura física de tag RFID (LF ou UHF) */
-    DATA_TYPE_BATTERY,  /**< Medição de telemetria analógica da bateria */
-    DATA_TYPE_ACCEL,    /**< Dados do acelerômetro da K10 */
-    DATA_TYPE_RFID_WITH_ACCEL /**< RFID com dados de movimento */
+    DATA_TYPE_RFID,     /**< Leitura fisica de tag RFID (LF ou UHF) */
+    DATA_TYPE_BATTERY,  /**< Medicao de telemetria analogica da bateria */
+    DATA_TYPE_ACCEL,    /**< Dados do acelerometro da K10 */
+    DATA_TYPE_RFID_WITH_ACCEL, /**< RFID com dados de movimento */
+    DATA_TYPE_ALERT,    /**< Alerta do STM32 (bateria critica/baixa) */
+    DATA_TYPE_HEARTBEAT /**< Heartbeat periodico do STM32 */
 } data_type_t;
 
 /**
@@ -67,9 +69,10 @@ typedef struct {
     float accel_y;
     float accel_z;
     uint8_t movement;
+    char alert_code[24];
 } stm32_data_t;
 
-/* --- Variáveis Globais Compartilhadas --- */
+/* --- Variaveis Globais Compartilhadas --- */
 
 /**
  * @brief Handle global da fila de dados recebidos do STM32.
@@ -78,32 +81,32 @@ typedef struct {
  */
 extern QueueHandle_t stm32_data_queue;
 
-/* --- Funções de Interface Pública --- */
+/* --- Funcoes de Interface Publica --- */
 
 /**
  * @brief Inicializa a porta serial UART1 e instala o driver correspondente.
  * @details Configura a baud rate, tamanho de palavra, stop bits, paridade e os pinos
- *          físicos do ESP32 cruzando com as linhas de transmissão do STM32.
+ *          fisicos do ESP32 cruzando com as linhas de transmissao do STM32.
  * 
  * @pre O hardware do ESP32 deve estar alimentado e com pinos IO13/IO14 livres de bootstrapping.
- * @post O driver de UART1 é registrado no sistema operacional e o buffer de hardware é alocado.
+ * @post O driver de UART1 e registrado no sistema operacional e o buffer de hardware e alocado.
  * 
- * @return esp_err_t Código de erro clássico do ESP-IDF.
- *         - ESP_OK: Inicialização realizada com sucesso.
- *         - ESP_FAIL ou outros códigos: Falha na alocação de recursos ou na configuração dos pinos.
+ * @return esp_err_t Codigo de erro classico do ESP-IDF.
+ *         - ESP_OK: Inicializacao realizada com sucesso.
+ *         - ESP_FAIL ou outros codigos: Falha na alocacao de recursos ou na configuracao dos pinos.
  */
 esp_err_t stm32_uart_init(void);
 
 /**
- * @brief Cria e inicia a tarefa assíncrona do FreeRTOS encarregada de ler a UART.
- * @details Instancia a task de leitura em background, que escutará a UART continuamente,
- *          decodificará strings em formato JSON terminadas por '\n' e alimentará a fila global.
+ * @brief Cria e inicia a tarefa assincrona do FreeRTOS encarregada de ler a UART.
+ * @details Instancia a task de leitura em background, que escutara a UART continuamente,
+ *          decodificara strings em formato JSON terminadas por '\n' e alimentara a fila global.
  *
- * @pre A fila stm32_data_queue e o driver de UART já devem estar previamente inicializados.
+ * @pre A fila stm32_data_queue e o driver de UART ja devem estar previamente inicializados.
  *
- * @param[in] priority Prioridade de execução da task FreeRTOS. Recomenda-se prioridade intermediária (ex: 5).
+ * @param[in] priority Prioridade de execucao da task FreeRTOS. Recomenda-se prioridade intermediaria (ex: 5).
  *
- * @return BaseType_t Retorna pdPASS se a criação da task foi bem sucedida, ou código de erro do FreeRTOS.
+ * @return BaseType_t Retorna pdPASS se a criacao da task foi bem sucedida, ou codigo de erro do FreeRTOS.
  */
 BaseType_t stm32_uart_rx_task_start(UBaseType_t priority);
 
@@ -115,6 +118,17 @@ BaseType_t stm32_uart_rx_task_start(UBaseType_t priority);
  * @return esp_err_t ESP_OK em caso de sucesso.
  */
 esp_err_t stm32_uart_send_string(const char *str);
+
+/**
+ * @brief Verifica se o STM32 esta vivo (heartbeat recebido nos ultimos 60s).
+ * @return 1 se STM32 responsivo, 0 se timeout.
+ */
+uint8_t stm32_uart_is_stm32_alive(void);
+
+/**
+ * @brief Reseta o watchdog do STM32.
+ */
+void stm32_uart_watchdog_reset(void);
 
 #ifdef __cplusplus
 }

@@ -328,7 +328,64 @@
   - `esp32_firmware/main/esp_power.c` (criado)
   - `esp32_firmware/main/CMakeLists.txt` (modificado - adicionado esp_power)
   - `esp32_firmware/main/main.c` (modificado - integração esp_power)
-  - `teste_automatizado/verify_mesh_stress.py` (criado)
+   - `teste_automatizado/verify_mesh_stress.py` (criado)
+
+
+## Session: 2026-06-11
+
+### Phase 29: Refatoração do Firmware STM32 (Modularização)
+- **Status:** complete
+- **Actions taken:**
+  - Criado `circular_buffer.c/.h` com API genérica (Init, Write, Read, Available, Peek, Flush, IsEmpty, IsFull)
+  - Criado `rfid_parser.c/.h` extraindo parsing YRM100 (frame `0xBB`) e WL-134 (frame ASCII 30 bytes) do `main.c`
+  - Criado `battery_monitor.c/.h` extraindo leitura ADC da bateria, com filtro de média móvel de 8 amostras
+  - Limpo `main.h`: removido `BATTERY_CRITICAL_THRESHOLD 15.0f` conflitante, removidas structs/declarações movidas
+  - Implementado `Command_Process()` com monitoramento de buzzer e LED de bateria crítica
+  - Adicionado `Buzzer_IsActive()` ao módulo `alerts.c/.h`
+  - Atualizado `main.c` para usar os novos módulos (redução de 705 → 570 linhas)
+  - Adicionado heartbeat periódico do STM32 (`{"type":"heartbeat"}` a cada 30s)
+- **Files created/modified:**
+  - `stm32_firmware/Core/Inc/circular_buffer.h` (criado)
+  - `stm32_firmware/Core/Src/circular_buffer.c` (criado)
+  - `stm32_firmware/Core/Inc/rfid_parser.h` (criado)
+  - `stm32_firmware/Core/Src/rfid_parser.c` (criado)
+  - `stm32_firmware/Core/Inc/battery_monitor.h` (criado)
+  - `stm32_firmware/Core/Src/battery_monitor.c` (criado)
+  - `stm32_firmware/Core/Inc/main.h` (modificado - limpeza de defines/structs conflitantes)
+  - `stm32_firmware/Core/Src/main.c` (modificado - uso dos novos módulos, heartbeat)
+  - `stm32_firmware/Core/Inc/alerts.h` (modificado - add Buzzer_IsActive)
+  - `stm32_firmware/Core/Src/alerts.c` (modificado - add Buzzer_IsActive)
+
+### Phase 30: Validação e Robustez do Pipeline STM32 → ESP32
+- **Status:** complete
+- **Actions taken:**
+  - Adicionado parser `type:"alert"` (DATA_TYPE_ALERT) e `type:"heartbeat"` (DATA_TYPE_HEARTBEAT) no stm32_uart.c
+  - Removido `test_loop_enabled` e código de injeção RFID falsa do main.c do ESP32
+  - Aumentado `stm32_data_queue` de 10 para 20 itens
+  - Implementado watchdog STM32: `stm32_uart_is_stm32_alive()` emite alerta se >60s sem heartbeat
+  - Adicionado campo `stm32_alive` na `bastao_device_status_t` exposto via BLE GATT
+  - Integrado watchdog no loop principal do ESP32
+- **Files created/modified:**
+  - `esp32_firmware/main/stm32_uart.h` (modificado - add DATA_TYPE_ALERT, DATA_TYPE_HEARTBEAT, watchdog API)
+  - `esp32_firmware/main/stm32_uart.c` (modificado - add alert/heartbeat parsers, watchdog)
+  - `esp32_firmware/main/main.c` (modificado - removido test_loop, add watchdog, queue=20)
+  - `esp32_firmware/main/ble_mobile.h` (modificado - add stm32_alive field)
+
+### Phase 31: Testes de Integração e Validação Final
+- **Status:** complete
+- **Actions taken:**
+  - Criado `verify_stm32_uart.py` com 35 testes de formato JSON, parsing, watchdog, fila
+  - Criado `verify_uart_stress.py` com 13 cenarios de burst (20-100 tags), documentacao de limites
+  - Criado `verify_bidirectional.py` com 22 testes de comandos ESP32->STM32 e heartbeat como ACK
+  - Criado `verify_sleep_wake_uart.py` com 18 testes de sleep/wake/ciclo completo
+  - Todos os 88 testes validados com sucesso (0 falhas)
+- **Files created/modified:**
+  - `teste_automatizado/verify_stm32_uart.py` (criado)
+  - `teste_automatizado/verify_uart_stress.py` (criado)
+  - `teste_automatizado/verify_bidirectional.py` (criado)
+  - `teste_automatizado/verify_sleep_wake_uart.py` (criado)
+  - `task_plan.md` (modificado - fase 31 concluida)
+  - `ROADMAP.md` (modificado - fase 31 concluida)
 
 
 

@@ -42,7 +42,7 @@ void Power_Sleep(void) {
     HAL_GPIO_WritePin(YRM100_PWR_PORT, YRM100_PWR_PIN, GPIO_PIN_RESET);
 
     HAL_SuspendTick();
-    HAL_PWR_EnterSTOPMode(PWR_LOWPOWERMODE_STOP, PWR_STOPENTRY_WFI);
+    HAL_PWR_EnterSTOPMode(PWR_LOWPOWERMODE_STOP1, PWR_STOPENTRY_WFI);
     SystemClock_Config();
 
     HAL_ResumeTick();
@@ -65,11 +65,9 @@ void Power_EnterDeepSleep(void) {
     HAL_GPIO_WritePin(YRM100_PWR_PORT, YRM100_PWR_PIN, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(LED_STATUS_PORT, LED_STATUS_PIN, GPIO_PIN_RESET);
 
-    __HAL_RCC_WAKEUPSTOP_CLOCK_SOURCE_CONFIG(RCC_STOP_WAKEUPCLOCK_LSI);
-
     HAL_PWREx_EnableLowPowerRunMode();
 
-    HAL_PWR_EnterSTOPMode(PWR_LOWPOWERMODE_STOP, PWR_STOPENTRY_WFI);
+    HAL_PWR_EnterSTOPMode(PWR_LOWPOWERMODE_STOP1, PWR_STOPENTRY_WFI);
 }
 
 void Power_Wake(void) {
@@ -106,8 +104,8 @@ uint32_t Power_GetWakeupInterval(void) {
 
 void Power_EnableDeepSleep(uint8_t enable) {
     if (enable) {
-        __HAL_RCC_WAKEUPSTOP_CLOCK_SOURCE_CONFIG(RCC_STOP_WAKEUPCLOCK_LSI);
-        HAL_PWREx_EnablePullUpPullUpConfig(PWR_PULLUP_PULLUP_GPIO0 | PWR_PULLUP_PULLUP_GPIO1);
+        HAL_PWREx_EnablePullUpPullDownConfig();
+        HAL_PWREx_EnableGPIOPullUp(PWR_GPIO_A, PWR_GPIO_BIT_0 | PWR_GPIO_BIT_1);
     }
 }
 

@@ -18,6 +18,13 @@ Release/
 .DS_Store
 Thumbs.db
 
+# STM32CubeIDE workspace temp
+stm32_workspace_temp/
+
+# Python cache
+__pycache__/
+*.pyc
+
 # User specific
 *.user
 *.bak

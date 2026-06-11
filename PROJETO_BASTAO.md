@@ -56,8 +56,19 @@ Responsável pela lógica de rede, criptografia e integração com a nuvem.
 
 ### 3.3. Mensageria e Segurança
 - **Formato de Dados:** JSON.
-- **Criptografia:** AES (padrão ESP32) para todos os dados enviados à tela ou servidor.
+- **Criptografia:** AES-256-CBC com IV aleatório de 16 bytes via hardware RNG do ESP32.
+  - Formato do payload hex: `hex(IV 16B) + hex(ciphertext)` — IV prefixado.
+  - Padding: PKCS#7 (128-bit blocks).
+  - Compatível com `crypto.py` do sistemaBastao (`descriptografar_frame`).
 - **MQTT:** Configurações e comandos trafegam via MQTT criptografado.
+  - **Broker:** `209.50.240.55:1883` (sistemaBastao EMQX).
+  - **Topico de telemetria:** `agro/bastao/{MAC}/telemetry` (MAC do ESP32 = numero_serie).
+  - **Topico de comandos:** `id/{MAC}/cmd` (subscribe para comandos remotos).
+  - **Topico de config:** `id/{MAC}/config` (subscribe para config remota).
+  - **Autenticacao:** Username = MAC, Password = chave AES hex (gerados dinamicamente).
+  - **Keepalive:** 60 segundos.
+- **Payload MQTT (sistemaBastao):** Campos `id_brinco`, `latitude`, `longitude`, `nivel_bateria`, `timestamp_rtc`.
+- **Payload BLE Mesh (K10):** Campos `type`, `model`, `tag`, `name`, `weight`, `lot` (formato legado mantido).
 
 ## 4. Estrutura do Projeto
 - `/stm32_firmware`: Projeto STM32CubeIDE contendo o firmware de sensoriamento.
@@ -102,7 +113,133 @@ O projeto utiliza agents do OpenCode para desenvolvimento focado em cada compone
 3. O ESP32 empacota a UUID, dados de bateria e localização (GPS) em um JSON.
 4. O payload é criptografado com AES.
 5. O dado é enviado para a Tela K10 via BLE Mesh e para a nuvem via MQTT (4G).
-## 8. Referências Técnicas
+
+## 8. Pipeline de Dados (Fase 28 - Integração sistemaBastao)
+
+### 8.1. Fluxo Completo
+
+```
+STM32 (RFID Tag)
+  │
+  ├── UART ──> ESP32 (stm32_uart_rx_task)
+  │              │
+  │              ├── DATA_TYPE_RFID ──> animal_db_lookup() ──> JSON enriquecido
+  │              │
+  │              ├── dispatcher_task
+  │              │    ├── JSON p/ BLE Mesh (K10): type, model, tag, name, weight, lot
+  │              │    └── JSON p/ MQTT (sistemaBastao): id_brinco, lat, lon, batt, timestamp
+  │              │
+  │              ├── secure_payload_encrypt()
+  │              │    ├── IV aleatório (16 bytes via esp_fill_random)
+  │              │    ├── AES-256-CBC + PKCS#7
+  │              │    └── output: hex(IV) + hex(ciphertext)
+  │              │
+  │              ├── mesh_coordinator_send_data() ──> K10
+  │              │
+  │              └── mqtt_publisher_enqueue() ──> ESP-MQTT Client
+  │                                                   │
+  │                                                   ├── Keepalive: 60s
+  │                                                   ├── Auth: MAC / AES key hex
+  │                                                   │
+  │                                           ┌───────▼────────┐
+  │                                           │  EMQX 5.7.1    │
+  │                                           │  209.50.240.55 │
+  │                                           └───────┬────────┘
+  │                                                   │
+  │                                           ┌───────▼────────┐
+  │                                           │  Receptor      │
+  │                                           │  Daemon        │
+  │                                           │  ThreadPool(4) │
+  │                                           └───────┬────────┘
+  │                                                   │
+  │                                           ┌───────▼────────┐
+  │                                           │  PostgreSQL    │
+  │                                           │  + PostGIS     │
+  │                                           │  + Blockchain  │
+  │                                           └────────────────┘
+```
+
+### 8.2. Payload MQTT (sistemaBastao)
+
+```json
+{
+  "id_brinco": "30751FEB705C5904E3D50D70",
+  "latitude": -23.55052,
+  "longitude": -46.633308,
+  "nivel_bateria": 8.45,
+  "timestamp_rtc": "2026-06-11T12:00:00Z"
+}
+```
+
+### 8.3. Payload BLE Mesh (K10 - mantido)
+
+```json
+{
+  "type": "rfid",
+  "model": "YRM100",
+  "tag": "30751FEB705C5904E3D50D70",
+  "name": "Vaca 001",
+  "weight": 450.5,
+  "lot": "Lote A"
+}
+```
+
+## 9. Sistema de Configuração Centralizada
+
+### 9.1. Arquivo Único de Config
+
+Todas as configurações do firmware do ESP32 são definidas em:
+
+```
+esp32_firmware/private_configs.env
+```
+
+| Variável | Descrição | Exemplo |
+|----------|-----------|---------|
+| `BASTAO_MQTT_URI` | URI do broker MQTT | `mqtt://209.50.240.55:1883` |
+| `BASTAO_MQTT_CLIENT_ID` | Client ID MQTT | `bastao-esp-001` |
+| `BASTAO_WIFI_SSID` | SSID Wi-Fi (fallback) | `""` (vazio = desligado) |
+| `BASTAO_WIFI_PASS` | Senha Wi-Fi | `""` |
+| `BASTAO_WIFI_ENABLED` | Habilitar Wi-Fi | `false` |
+| `BASTAO_APN_NAME` | APN do chip 4G | `iot.datatem.com.br` |
+| `BASTAO_APN_USER` | Usuário APN | `datatem` |
+| `BASTAO_APN_PASS` | Senha APN | `datatem` |
+| `BASTAO_CELL_ENABLED` | Habilitar 4G | `true` |
+| `BASTAO_AES_KEY` | Chave AES-256 em hex (64 chars) | `0123...` |
+| `BASTAO_NET_MODE` | Modo de rede | `auto`, `wifi_only`, `cellular_only` |
+
+### 9.2. Gerador de Config
+
+```bash
+cd esp32_firmware
+python generate_config.py          # Lê .env e gera main/private_configs.h
+idf.py build                       # Compila com a config gerada
+```
+
+### 9.3. Credenciais MQTT Dinâmicas
+
+Username e password MQTT **não são configurados no .env** — são gerados em runtime:
+- **Username:** MAC do ESP32 (ex: `206EF1D4D574`)
+- **Password:** Chave AES em hexadecimal (64 chars)
+- Motivo: Compatibilidade com a tabela `mqtt_usuarios` do sistemaBastao.
+
+## 10. TEST CODE — Loop de Injeção RFID
+
+> ⚠ **ATENÇÃO:** Este é um recurso temporário para validação do pipeline.
+> Deve ser **removido** antes da produção.
+
+O firmware possui um loop de injeção automática de RFID fictício
+ativado pela flag `test_loop_enabled` em `main.c`:
+
+- Disparo inicial: imediatamente após conexão MQTT.
+- Repetições: a cada **5 minutos** (300 segundos).
+- Tag enviada: `BRINCO_INTEGRACAO_001`.
+- Logs marcados com `[TESTE]` para fácil identificação.
+
+**Localização no código:** `main.c` — loop principal `while(1)`, bloco comentado
+com `TEST CODE`. Remover a variável `test_loop_enabled` e o bloco de injeção.
+
+## 11. Referências Técnicas
 Os manuais originais com os protocolos completos estão localizados na raiz do projeto:
 
 - **YRM100 UHF Reader:** [Communication user Protocol V2.1_en.docx](file:///d:/git/Bastao/Bast%C3%A3o-ESP/Communication%20user%20Protocol%20V2.1_en.docx)

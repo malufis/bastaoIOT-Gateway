@@ -1,6 +1,6 @@
 /**
  * @file esp_power.h
- * @brief Módulo de gerenciamento de energia para o ESP32
+ * @brief Modulo de gerenciamento de energia para o ESP32
  *
  * Controla os modos de baixo consumo (light sleep, deep sleep) e
  * wake-up sources baseados em atividade RFID ou temporizador.

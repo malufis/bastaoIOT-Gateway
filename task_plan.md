@@ -93,10 +93,10 @@ Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 - **Status:** complete
 
 ### Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
-- [ ] Estender o parser JSON do comando recebido em `bastao/cmd`
-- [ ] Implementar alteração dinâmica de configurações via comandos remotos
-- [ ] Roteamento de comandos de hardware do ESP32 para o STM32 via serial UART
-- **Status:** pending
+- [x] Estender o parser JSON do comando recebido em `bastao/cmd`
+- [x] Implementar alteração dinâmica de configurações via comandos remotos
+- [x] Roteamento de comandos de hardware do ESP32 para o STM32 via serial UART
+- **Status:** complete
 
 ### Phase 17: Refatoração dos Agentes de Desenvolvimento (Concluído)
 - [x] Unificar `stm32_agent.md` e `rfid_agent.md` em `stm32_firmware_agent.md`
@@ -168,9 +168,40 @@ Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 - [x] Inicializar logger no boot do main.c
 - **Status:** complete
 
+### Phase 26: SMS, Logs de Antena e Subscrições de Configuração (NOVA)
+- [x] Implementar subscrição de tópicos de configuração remota via MQTT (`id/<ID>/config`)
+- [x] Implementar leitura de erros celular estendidos via comando AT `AT+CEER` e diagnóstico de antena
+- [x] Implementar engine de envio e recepção de SMS para contingência/alertas
+- **Status:** complete
+
+### Phase 29: Refatoração do Firmware STM32 (Modularização)
+- [x] 29.1 — Criar `rfid_parser.c/.h` com parsing YRM100 e WL-134
+- [x] 29.2 — Criar `battery_monitor.c/.h` com ADC e filtro de média móvel
+- [x] 29.3 — Criar `circular_buffer.c/.h` com buffer circular genérico
+- [x] 29.4 — Limpar `main.h` (remover BATTERY_CRITICAL_THRESHOLD conflitante)
+- [x] 29.5 — Implementar `Command_Process()` com monitoramento de buzzer/LED
+- [x] 29.6 — Substituir buffers manuais por módulo `circular_buffer` e `rfid_parser`
+- **Status:** complete
+
+### Phase 30: Validação e Robustez do Pipeline STM32 → ESP32
+- [x] 30.1 — Adicionar parser `type:"alert"` no `stm32_uart.c` do ESP32
+- [x] 30.2 — Remover `test_loop_enabled` e código de injeção RFID falsa do ESP32
+- [x] 30.3 — Aumentar `stm32_data_queue` de 10 para 20+ itens
+- [x] 30.4 — Adicionar heartbeat periódico do STM32 (`{"type":"heartbeat"}` a cada 30s)
+- [x] 30.5 — Watchdog de timeout STM32 no ESP32 (alerta se >60s sem heartbeat)
+- **Status:** complete
+
+### Phase 31: Testes de Integração e Validação Final
+- [x] 31.1 — Criar `verify_stm32_uart.py` (simula dados do STM32, 35 testes)
+- [x] 31.2 — Criar `verify_uart_stress.py` (burst de 20-50 tags, 13 cenarios)
+- [x] 31.3 — Criar `verify_bidirectional.py` (9 comandos + heartbeat, 22 testes)
+- [x] 31.4 — Criar `verify_sleep_wake_uart.py` (sleep/wake/ ciclos, 18 testes)
+- **Status:** complete
+- **Resultado:** 88/88 testes passaram (0 falhas)
+
 ## Tarefas Pendentes
-- Nenhuma tarefa pendente - Projeto Bastão-ESP concluido!
-- **Status:** all complete
+- **Nenhuma. Todas as fases 1-31 concluidas.**
+- **Status:** complete
 
 ## Key Questions
 1. Como o STM32 envia a leitura de bateria? (JSON via UART2)

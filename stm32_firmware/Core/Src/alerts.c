@@ -30,10 +30,13 @@ void Alerts_CheckBattery(float voltage) {
             alert_state.active = 1;
             battery_critical_flag = 1;
 
+            int volt_int = (int)voltage;
+            int volt_frac = (int)((voltage - volt_int) * 100.0f);
+            if (volt_frac < 0) volt_frac = -volt_frac;
             char json[128];
             snprintf(json, sizeof(json),
-                "{\"type\":\"alert\",\"code\":\"batt_critical\",\"volt\":%.2f}\n",
-                voltage);
+                "{\"type\":\"alert\",\"code\":\"batt_critical\",\"volt\":%d.%02d}\n",
+                volt_int, volt_frac);
             HAL_UART_Transmit(&huart2, (uint8_t*)json, strlen(json), 100);
         }
     } else if (voltage < BATTERY_LOW_VOLTAGE) {
@@ -41,10 +44,13 @@ void Alerts_CheckBattery(float voltage) {
             alert_state.type = ALERT_BATT_LOW;
             alert_state.active = 1;
 
+            int volt_int = (int)voltage;
+            int volt_frac = (int)((voltage - volt_int) * 100.0f);
+            if (volt_frac < 0) volt_frac = -volt_frac;
             char json[128];
             snprintf(json, sizeof(json),
-                "{\"type\":\"alert\",\"code\":\"batt_low\",\"volt\":%.2f}\n",
-                voltage);
+                "{\"type\":\"alert\",\"code\":\"batt_low\",\"volt\":%d.%02d}\n",
+                volt_int, volt_frac);
             HAL_UART_Transmit(&huart2, (uint8_t*)json, strlen(json), 100);
         }
     } else {
@@ -124,6 +130,10 @@ void Buzzer_Stop(void) {
 
 uint8_t Alerts_IsBatteryCritical(void) {
     return battery_critical_flag;
+}
+
+uint8_t Buzzer_IsActive(void) {
+    return buzzer_state;
 }
 
 void Buzzer_Update(void) {

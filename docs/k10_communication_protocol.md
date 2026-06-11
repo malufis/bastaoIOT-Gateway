@@ -96,13 +96,43 @@ Este documento define o protocolo de comunicação entre o firmware do Bastão-E
 
 ---
 
-## 4. Tópicos MQTT (Para Referência)
+## 4. Tópicos MQTT (sistemaBastao)
 
-| Tópico | Dados |
-|--------|-------|
-| `bastao/telemetria` | Payload criptografado |
-| `bastao/gps` | Coordenadas GPS |
-| `bastao/cmd` | Comandos de controle |
+A partir da Fase 28, os tópicos MQTT foram alterados para o formato:
+
+| Tópico | Dados | Descrição |
+|--------|-------|-----------|
+| `agro/bastao/{MAC}/telemetry` | Payload criptografado | Telemetria RFID + GPS + bateria |
+| `agro/bastao/{MAC}/gps` | Coordenadas GPS | Localização (reservado) |
+| `id/{MAC}/cmd` | Comandos JSON | Subscribe para comandos remotos |
+| `id/{MAC}/config` | Config JSON | Subscribe para configuração remota |
+
+Onde `{MAC}` é o endereço MAC do ESP32 (ex: `206EF1D4D574`).
+
+### 4.1 Payload MQTT vs Payload Mesh
+
+O Bastão-ESP envia **dois payloads distintos** para o mesmo evento RFID:
+
+| Destino | Formato JSON | Criptografia | Uso |
+|---------|-------------|--------------|-----|
+| **BLE Mesh (K10)** | `type`, `model`, `tag`, `name`, `weight`, `lot` | AES-256-CBC (IV aleatório) | Exibição local na tela |
+| **MQTT (sistemaBastao)** | `id_brinco`, `latitude`, `longitude`, `nivel_bateria`, `timestamp_rtc` | AES-256-CBC (IV aleatório) | Persistência e análise |
+
+A separação foi necessária porque o sistemaBastao espera campos específicos
+(`id_brinco`, `timestamp_rtc`) para o blockchain hash e a K10 precisa dos
+campos legados (`type`, `model`, `tag`) para a interface gráfica.
+
+### 4.2 JSON MQTT (sistemaBastao)
+
+```json
+{
+  "id_brinco": "30751FEB705C5904E3D50D70",
+  "latitude": -23.55052,
+  "longitude": -46.633308,
+  "nivel_bateria": 8.45,
+  "timestamp_rtc": "2026-06-11T12:00:00Z"
+}
+```
 
 ---
 

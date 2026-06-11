@@ -24,8 +24,16 @@ Responsável pela lógica de rede, criptografia e integração com a nuvem.
   - **Papel:** Coordenador/Provisionador.
   - **Endpoint:** Tela K10.
   - **Segurança:** Provisionamento fechado via Whitelist de UUIDs e chaves OOB fixas.
-- **Conectividade Nuvem:** SIMCom 7663E (4G/LTE + GPS).
+- **Conectividade Nuvem:** SIMCom 7663E (4G/LTE + GPS) operando em interface PPP.
+  - **Suporte Dual SIM:** Suporte a dois slots de chips SIM (Slot 0 e Slot 1) gerenciados via software. No boot, realiza uma varredura automática (sonda Slot 0 e falls back para o Slot 1) para validar a presença (`AT+CPIN?`) e extrair o identificador do chip (`AT+CCID`).
   - **Interface:** UART (Pinos 17 e 18).
+  - **Mapeamento de Sinais e Erros Celulares:** Coleta de métricas avançadas RSRP, RSRQ, SINR (via `AT+CPSI?`) e logs estendidos de falha de conexão (via `AT+CEER`). Os valores são lidos ativamente offline e cacheados quando o PPP está ativo (evitando comandos AT concorrentes na interface de dados) e expostos na característica GATT 0xFF06.
+  - **Motor de SMS de Contingência:** Quando offline (conexão de dados inativa), o watchdog celular monitora o recebimento de SMS. Suporta a execução de comandos remotos (`BUZZER`, `RFID [ON/OFF]`, `STATUS`, `RESTART`) e responde ao remetente com tensão da bateria, status da rede, slot SIM ativo, CCID e coordenadas de GPS com fix.
+  - **Subscrição de Configuração Remota:** O Bastão-ESP se inscreve no tópico MQTT `id/<ID>/config` após conectar-se ao Broker. Quando um novo JSON de rede, MQTT ou hardware é recebido no tópico, ele é processado via `ble_mobile_process_config_json` e gravado de forma persistente no NVS.
+- **Orquestração de Redundância de Rede:**
+  - Máquina de estados centralizada (`manage_connectivity`) que atua com base nos modos de conectividade (Wi-Fi Only, Cellular Only, e Wi-Fi & Cellular/Auto).
+  - Se configurada em modo redundante (Auto), suspende a interface celular PPP quando o Wi-Fi possui um IP ativo (para economizar dados), e reativa a interface PPP celular imediatamente se o Wi-Fi desconectar.
+  - O driver de Wi-Fi STA foi modificado para não realizar conexões incessantes em loop ao sofrer desconexão, evitando varreduras de rádio contínuas que causam timeout e derrubam o link celular 4G ativo. As varreduras de segundo plano do Wi-Fi são espaçadas a cada 60 segundos enquanto o 4G é mantido estável.
 - **Interface com STM32:** UART (IO13-RX / IO14-TX) conectada à USART2 (PA2-TX / PA3-RX) do STM32. Conforme o esquema [esquematico_placa.pdf](file:///d:/git/Bastao/Bastão-ESP/Manual/esquematico_placa.pdf).
   - **Protocolo de Rede:** PPP (Point-to-Point Protocol) para ativação de dados.
   - **Aplicação:** Cliente MQTT operando sobre a pilha PPP.
@@ -54,27 +62,47 @@ Responsável pela lógica de rede, criptografia e integração com a nuvem.
 ## 4. Estrutura do Projeto
 - `/stm32_firmware`: Projeto STM32CubeIDE contendo o firmware de sensoriamento.
 - `/esp32_firmware`: Projeto ESP-IDF contendo o firmware de conectividade.
-- `/docs`: Manuais técnicos e documentação adicional.
-- `.agents/`: Instruções específicas para cada subsistema do projeto.
+- `/docs`: Manuais tecnicos e documentacao adicional.
+- `.opencode/skills/`: Skills de desenvolvimento do OpenCode (contexto injetado sob demanda).
 
-## 5. Agentes de Desenvolvimento
-O projeto utiliza agentes especializados para manutenção e desenvolvimento:
+## 5. Skills de Desenvolvimento
+O projeto utiliza skills do OpenCode para auxiliar no desenvolvimento e manutencao eficiente:
 
-| Agente | Escopo |
-|--------|--------|
-| `stm32_firmware_agent.md` | Firmware STM32G070CBTx (sensores, RFID, ADC) |
-| `esp32_connectivity_agent.md` | Conectividade ESP32 (Mesh, MQTT, BLE, OTA) |
-| `simcom_7663e_agent.md` | Modem celular SIMCom 7663E (4G, GPS, PPP) |
-| `c_best_practices_agent.md` | Padrões de código C (ESP32 e STM32) |
-| `testing_agent.md` | Testes automatizados e validação |
+| Skill | Pasta | Escopo |
+|--------|-------|--------|
+| `stm32-firmware` | `.opencode/skills/stm32-firmware` | Firmware STM32G070CBTx (sensores, RFID, ADC) |
+| `esp32-connectivity` | `.opencode/skills/esp32-connectivity` | Conectividade ESP32 (Mesh, MQTT, BLE, OTA) |
+| `simcom-7663e` | `.opencode/skills/simcom-7663e` | Modem celular SIMCom 7663E (4G, GPS, PPP) |
+| `c-best-practices` | `.opencode/skills/c-best-practices` | Padroes de codigo C (ESP32 e STM32) |
+| `testing` | `.opencode/skills/testing` | Testes automatizados e validacao |
+| `k10-firmware` | `.opencode/skills/k10-firmware` | Firmware K10 (LVGL, BLE Mesh Node, sensores) |
+| `security-crypto` | `.opencode/skills/security-crypto` | Seguranca e criptografia (AES, BLE, MQTT) |
+| `project-management` | `.opencode/skills/project-management` | Gestao de projeto, roadmap, planejamento |
+| `sistema-backend` | `.opencode/skills/sistema-backend` | Backend sistemaBastao (FastAPI, MQTT, PostgreSQL) |
+| `frontend-react` | `.opencode/skills/frontend-react` | Frontend React SPA e App Mobile Expo |
 
-## 6. Fluxo de Operação
+## 6. Agentes de Desenvolvimento
+O projeto utiliza agents do OpenCode para desenvolvimento focado em cada componente:
+
+| Agente | Arquivo | Escopo |
+|--------|---------|--------|
+| `documenter` | `.opencode/agents/documenter.md` | Documentacao, docstrings, AGENTS.md |
+| `esp32-firmware-agent` | `.opencode/agents/esp32-firmware-agent.md` | Firmware ESP32 (conectividade, BLE, MQTT, OTA) |
+| `stm32-firmware-agent` | `.opencode/agents/stm32-firmware-agent.md` | Firmware STM32 (RFID, ADC, power mgmt) |
+| `k10-firmware-agent` | `.opencode/agents/k10-firmware-agent.md` | Firmware K10 (display LVGL, BLE Mesh node) |
+| `testing-agent` | `.opencode/agents/testing-agent.md` | Automacao de testes e validacao |
+| `reviewer-agent` | `.opencode/agents/reviewer-agent.md` | Revisao de codigo e qualidade |
+| `architect-agent` | `.opencode/agents/architect-agent.md` | Arquitetura geral e decisoes tecnicas |
+| `sistema-bastao-agent` | `.opencode/agents/sistema-bastao-agent.md` | Backend sistemaBastao (API, receptor, agentes) |
+| `frontend-mobile-agent` | `.opencode/agents/frontend-mobile-agent.md` | Frontend web React e App Mobile Expo |
+
+## 7. Fluxo de Operação
 1. O STM32 ativa a energia dos módulos RFID.
 2. Ao detectar uma tag, o STM32 faz o parsing do UUID e envia para o ESP32 via UART.
 3. O ESP32 empacota a UUID, dados de bateria e localização (GPS) em um JSON.
 4. O payload é criptografado com AES.
 5. O dado é enviado para a Tela K10 via BLE Mesh e para a nuvem via MQTT (4G).
-## 6. Referências Técnicas
+## 8. Referências Técnicas
 Os manuais originais com os protocolos completos estão localizados na raiz do projeto:
 
 - **YRM100 UHF Reader:** [Communication user Protocol V2.1_en.docx](file:///d:/git/Bastao/Bast%C3%A3o-ESP/Communication%20user%20Protocol%20V2.1_en.docx)

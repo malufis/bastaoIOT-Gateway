@@ -1,7 +1,7 @@
 /**
  * @file secure_payload.h
- * @brief Cabeçalho do módulo de segurança e criptografia de payloads.
- * @details Este módulo define as rotinas de criptografia simétrica AES para
+ * @brief Cabecalho do modulo de seguranca e criptografia de payloads.
+ * @details Este modulo define as rotinas de criptografia simetrica AES para
  *          blindagem de payloads de telemetria enviados via BLE Mesh ou MQTT.
  * 
  * @author Antigravity Agent
@@ -26,13 +26,13 @@ extern "C" {
 #define AES_BLOCK_SIZE_BYTES 16
 
 /**
- * @brief Inicializa o módulo criptográfico carregando a chave e vetor de inicialização (IV).
- * @details Configura a chave estática local de criptografia utilizada na cifragem do payload.
+ * @brief Inicializa o modulo criptografico carregando a chave e vetor de inicializacao (IV).
+ * @details Configura a chave estatica local de criptografia utilizada na cifragem do payload.
  * 
  * @param[in] key Ponteiro para array contendo a chave de 32 bytes.
  * 
  * @pre O hardware do ESP32 deve estar inicializado.
- * @post A chave é armazenada internamente na RAM protegida.
+ * @post A chave e armazenada internamente na RAM protegida.
  * 
  * @return esp_err_t ESP_OK em caso de sucesso, ou erro do ESP-IDF.
  */
@@ -40,19 +40,20 @@ esp_err_t secure_payload_init(const uint8_t *key);
 
 /**
  * @brief Criptografa uma string de texto em formato JSON usando AES-256-CBC com preenchimento PKCS#7.
- * @details Aloca ou usa buffers para retornar a string cifrada em codificação hexadecimal 
- *          para transmissão segura.
+ * @details Gera um IV aleatorio de 16 bytes (via esp_fill_random) e o prefixa ao
+ *          ciphertext no buffer de saida. Formato: hex(IV 16B) + hex(ciphertext).
  * 
  * @param[in] input_str String C original terminada com '\0' contendo o JSON.
- * @param[out] output_hex Buffer de saída onde será gravado o resultado criptografado em hexadecimal.
- * @param[in] max_output_len Capacidade máxima em bytes do buffer de saída.
+ * @param[out] output_hex Buffer de saida onde sera gravado IV + ciphertext em hexadecimal.
+ *                        Tamanho necessario: (16 + padded_len) * 2 + 1 bytes.
+ * @param[in] max_output_len Capacidade maxima em bytes do buffer de saida.
  * 
- * @pre O módulo deve ter sido iniciado com secure_payload_init.
- * @post O output_hex conterá a representação hex da mensagem criptografada.
+ * @pre O modulo deve ter sido iniciado com secure_payload_init.
+ * @post O output_hex contera 32 chars de IV hex + N chars de ciphertext hex.
  * 
  * @return esp_err_t ESP_OK em caso de sucesso.
  *                   ESP_ERR_INVALID_ARG se os ponteiros forem nulos.
- *                   ESP_ERR_NO_MEM se o buffer de saída for muito pequeno.
+ *                   ESP_ERR_NO_MEM se o buffer de saida for muito pequeno.
  */
 esp_err_t secure_payload_encrypt(const char *input_str, char *output_hex, size_t max_output_len);
 

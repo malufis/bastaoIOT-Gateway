@@ -2,8 +2,8 @@
  * @file main.c
  * @brief Ponto de entrada e orquestrador principal do firmware do ESP32
  * (Coordenador Mesh).
- * @details Este arquivo é responsável por inicializar a infraestrutura do
- * sistema, como NVS Flash, módulo criptográfico, pilha BLE Mesh, modem celular
+ * @details Este arquivo e responsavel por inicializar a infraestrutura do
+ * sistema, como NVS Flash, modulo criptografico, pilha BLE Mesh, modem celular
  * SIMCom 7663E (PPP), cliente MQTT, e a tarefa central de roteamento/despacho
  * de mensagens criptografadas para a rede local e para a nuvem.
  *
@@ -12,11 +12,15 @@
  */
 
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_event.h"
+#include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include <stdio.h>
+#include <time.h>
 
 #include "ble_mobile.h"
 #include "mesh_coordinator.h"
@@ -31,88 +35,110 @@
 #include "animal_db.h"
 #include "esp_power.h"
 #include "cmd_parser.h"
+#include "esp32_logger.h"
+#include "private_configs.h"
 
 static const char *TAG = "MAIN";
 
 /**
- * @brief Chave simétrica estática padrão para criptografia AES-256 (32 bytes).
- * @warning Para fins de homologação e produção, esta chave deve ser armazenada
- *          de forma protegida em partições NVS criptografadas ou via hardware
- * (eFuse).
+ * @brief Variaveis para loop de teste de integracao.
+ * @warning ============================================================
+ *          TEST CODE — REMOVER ANTES DA PRODUCAO
+ *          ============================================================
+ * Este loop injeta dados RFID ficticios a cada 5 minutos para validar
+ * o pipeline MQTT sem depender do STM32. Deve ser removido quando o
+ * STM32 estiver integrado e enviando dados reais.
  */
-static const uint8_t default_aes_key[AES_KEY_SIZE_BYTES] = {
-    0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA,
-    0x98, 0x76, 0x54, 0x32, 0x10, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA,
-    0xDC, 0xFE, 0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01};
+static bool test_loop_enabled = true;
+static uint32_t test_loop_tick = 0;
+static stm32_data_t test_rfid;
+static simcom_gps_data_t gps_data;
 
 /**
- * @brief Configuração padrão da APN da operadora celular.
- * @warning Ajustar para a operadora do chip SIM instalado no bastão.
+ * @brief Chave simetrica estatica padrao para criptografia AES-256 (32 bytes).
  */
-static const simcom_apn_config_t default_apn = {
-    .apn = "zap.vivo.com.br",
-    .user = "vivo",
-    .password = "vivo",
-};
+static const uint8_t default_aes_key[AES_KEY_SIZE_BYTES] = PRIVATE_AES_KEY;
 
-/**
- * @brief Configuração padrão do broker MQTT na nuvem.
- * @warning Ajustar URI, tópicos e client_id para o ambiente de produção.
- */
-static const mqtt_publisher_config_t default_mqtt_config = {
-    .broker_uri = "mqtt://broker.example.com:1883",
-    .topic_telemetry = "bastao/telemetria",
-    .topic_gps = "bastao/gps",
-    .client_id = "bastao-esp-001",
-};
+
 
 /**
  * @brief Task consumidora/despachante encarregada de processar a fila
  * stm32_data_queue.
- * @details Retira dados da fila estruturada preenchida pela recepção UART,
- * serializa-os de volta em JSON padrão, aciona a criptografia AES-256 do módulo
+ * @details Retira dados da fila estruturada preenchida pela recepcao UART,
+ * serializa-os de volta em JSON padrao, aciona a criptografia AES-256 do modulo
  * secure_payload, e direciona a string criptografada em hexadecimal para a Tela
  * K10 via BLE Mesh.
  *
- * @param[in,out] pvParameters Parâmetros padrão do FreeRTOS (Não utilizado).
+ * @param[in,out] pvParameters Parametros padrao do FreeRTOS (Nao utilizado).
  */
 static void dispatcher_task(void *pvParameters) {
   stm32_data_t raw_msg;
-  char json_buf[320];
+  char json_buf[384];
+  char json_mqtt[384];
   char encrypted_hex[768];
 
   ESP_LOGI(TAG, "Task despachante iniciada com sucesso.");
 
   while (1) {
-    // Verifica período de energia
     esp_power_update();
 
-    // Aguarda por dados com timeout de 1s para permitir verificação periódica
     if (xQueueReceive(stm32_data_queue, &raw_msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
       memset(json_buf, 0, sizeof(json_buf));
+      memset(json_mqtt, 0, sizeof(json_mqtt));
       memset(encrypted_hex, 0, sizeof(encrypted_hex));
 
-      // 1. Reconstrói o JSON correspondente ao tipo de mensagem
-      if (raw_msg.type == DATA_TYPE_RFID) {
+      // 1. Reconstroi o JSON para BLE Mesh (formato original com type/model/tag)
+      if (raw_msg.type == DATA_TYPE_RFID || raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL) {
         animal_record_t anim_rec;
         esp_err_t db_err = animal_db_lookup(raw_msg.tag, &anim_rec);
+        bool has_accel = (raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL);
+
         if (db_err == ESP_OK) {
-          snprintf(json_buf, sizeof(json_buf),
-                   "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"name\":\"%s\",\"weight\":%.2f,\"lot\":\"%s\"}",
-                   raw_msg.model, raw_msg.tag, anim_rec.name, anim_rec.weight, anim_rec.lot);
+          if (has_accel) {
+            snprintf(json_buf, sizeof(json_buf),
+                     "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"name\":\"%s\",\"weight\":%.2f,\"lot\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"movement\":%d}",
+                     raw_msg.model, raw_msg.tag, anim_rec.name, anim_rec.weight, anim_rec.lot,
+                     raw_msg.accel_x, raw_msg.accel_y, raw_msg.accel_z, raw_msg.movement);
+          } else {
+            snprintf(json_buf, sizeof(json_buf),
+                     "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"name\":\"%s\",\"weight\":%.2f,\"lot\":\"%s\"}",
+                     raw_msg.model, raw_msg.tag, anim_rec.name, anim_rec.weight, anim_rec.lot);
+          }
         } else {
-          snprintf(json_buf, sizeof(json_buf),
-                   "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\"}",
-                   raw_msg.model, raw_msg.tag);
+          if (has_accel) {
+            snprintf(json_buf, sizeof(json_buf),
+                     "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"movement\":%d}",
+                     raw_msg.model, raw_msg.tag,
+                     raw_msg.accel_x, raw_msg.accel_y, raw_msg.accel_z, raw_msg.movement);
+          } else {
+            snprintf(json_buf, sizeof(json_buf),
+                     "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\"}",
+                     raw_msg.model, raw_msg.tag);
+          }
         }
 
-        // Notifica o app movel conectado via BLE sobre a nova tag lida
+        // Gera timestamp ISO 8601 para o payload MQTT
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        char timestamp_str[32];
+        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%dT%H:%M:%S-03:00", tm_info);
+
+        // Monta JSON para MQTT no formato esperado pelo sistemaBastao
+        double lat = bastao_current_status.gps_fix ? bastao_current_status.gps_latitude : 0.0;
+        double lon = bastao_current_status.gps_fix ? bastao_current_status.gps_longitude : 0.0;
+        float batt = bastao_current_status.battery_voltage > 0.0f ? bastao_current_status.battery_voltage : 8.4f;
+
+        snprintf(json_mqtt, sizeof(json_mqtt),
+                 "{\"id_brinco\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,\"nivel_bateria\":%.2f,\"timestamp_rtc\":\"%s\"}",
+                 raw_msg.tag, lat, lon, batt, timestamp_str);
+
         ble_mobile_notify_tag(json_buf);
         esp_power_trigger_wake();
         bastao_current_status.tags_read_count++;
 
-        // Envia comando de buzzer para o STM32 indicando leitura exitosa
-        stm32_cmd_send_buzzer(STM32_CMD_BUZZER_SHORT);
+        if (raw_msg.movement || raw_msg.type == DATA_TYPE_RFID) {
+          stm32_cmd_send_buzzer(STM32_CMD_BUZZER_SHORT);
+        }
       } else if (raw_msg.type == DATA_TYPE_BATTERY) {
         snprintf(json_buf, sizeof(json_buf),
                  "{\"type\":\"batt\",\"volt\":%.2f}", raw_msg.battery_v);
@@ -127,74 +153,127 @@ static void dispatcher_task(void *pvParameters) {
                  "{\"type\":\"accel\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"movement\":%d}",
                  raw_msg.accel_x, raw_msg.accel_y, raw_msg.accel_z, raw_msg.movement);
 
-        ESP_LOGI(TAG, "Acelerômetro recebido - Movimento: %s",
-                 raw_msg.movement ? "SIM" : "NÃO");
-
-        bara_current_status.movement_detected = raw_msg.movement;
-      } else if (raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL) {
-        animal_record_t anim_rec;
-        esp_err_t db_err = animal_db_lookup(raw_msg.tag, &anim_rec);
-
-        if (db_err == ESP_OK) {
-          snprintf(json_buf, sizeof(json_buf),
-                   "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"name\":\"%s\",\"weight\":%.2f,\"lot\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"movement\":%d}",
-                   raw_msg.model, raw_msg.tag, anim_rec.name, anim_rec.weight, anim_rec.lot,
-                   raw_msg.accel_x, raw_msg.accel_y, raw_msg.accel_z, raw_msg.movement);
-        } else {
-          snprintf(json_buf, sizeof(json_buf),
-                   "{\"type\":\"rfid\",\"model\":\"%s\",\"tag\":\"%s\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"movement\":%d}",
-                   raw_msg.model, raw_msg.tag,
-                   raw_msg.accel_x, raw_msg.accel_y, raw_msg.accel_z, raw_msg.movement);
-        }
-
-        ble_mobile_notify_tag(json_buf);
-        bara_current_status.tags_read_count++;
-
-        if (raw_msg.movement) {
-          stm32_cmd_send_buzzer(STM32_CMD_BUZZER_SHORT);
-          ESP_LOGI(TAG, "RFID + Movimento válido - Bipe curto");
-        } else {
-          ESP_LOGW(TAG, "RFID + Movimento suspeito - Pode estar em superfície estática");
-        }
+        bastao_current_status.movement_detected = raw_msg.movement;
       } else {
-        ESP_LOGW(TAG, "Mensagem recebida com tipo inválido ou desconhecido.");
+        ESP_LOGW(TAG, "Mensagem recebida com tipo invalido.");
         continue;
       }
 
-      ESP_LOGD(TAG, "JSON reconstruído para envio: %s", json_buf);
+      ESP_LOGD(TAG, "JSON Mesh: %s", json_buf);
 
-      // 2. Executa a criptografia AES-256-CBC do JSON
-      esp_err_t err = secure_payload_encrypt(json_buf, encrypted_hex,
-                                             sizeof(encrypted_hex));
+      // 2. Criptografa payload para BLE Mesh e envia para K10
+      esp_err_t err = secure_payload_encrypt(json_buf, encrypted_hex, sizeof(encrypted_hex));
       if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Payload criptografado gerado: %s", encrypted_hex);
-
-        // 3. Roteia os dados criptografados para a Tela K10 via BLE Mesh
+        ESP_LOGI(TAG, "Payload Mesh criptografado: %s", encrypted_hex);
         err = mesh_coordinator_send_data(encrypted_hex);
         if (err != ESP_OK) {
           ESP_LOGE(TAG, "Falha ao encaminhar dados via BLE Mesh.");
         }
+      }
 
-        // 4. Roteia em paralelo para a nuvem via MQTT (SIMCom 7663E)
-        err = mqtt_publisher_enqueue(default_mqtt_config.topic_telemetry,
-                                     encrypted_hex, 1);
-        if (err != ESP_OK) {
-          ESP_LOGW(TAG, "Falha ao enfileirar payload para MQTT. Salvando no cache offline...");
-          if (offline_cache_write(encrypted_hex) != ESP_OK) {
-              ESP_LOGE(TAG, "Falha ao salvar no cache offline.");
+      // 3. Se for leitura RFID, envia tambem para MQTT (sistemaBastao)
+      if ((raw_msg.type == DATA_TYPE_RFID || raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL) &&
+          json_mqtt[0] != '\0') {
+        ESP_LOGD(TAG, "JSON MQTT: %s", json_mqtt);
+        memset(encrypted_hex, 0, sizeof(encrypted_hex));
+        err = secure_payload_encrypt(json_mqtt, encrypted_hex, sizeof(encrypted_hex));
+        if (err == ESP_OK) {
+          ESP_LOGI(TAG, "Payload MQTT criptografado: %s", encrypted_hex);
+          err = mqtt_publisher_enqueue(bastao_network_config.mqtt.topic_telemetry,
+                                       encrypted_hex, 1);
+          if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Falha ao enfileirar MQTT. Salvando no cache...");
+            offline_cache_write(encrypted_hex);
           }
+        } else {
+          ESP_LOGE(TAG, "Falha na criptografia do payload MQTT: %d", err);
         }
-      } else {
-        ESP_LOGE(TAG, "Falha crítica na criptografia do payload. Código: %d",
-                 err);
       }
     }
   }
 }
 
-void app_main(void) {
-  ESP_LOGI(TAG, "Inicializando o Bastão-ESP Mesh Coordinator...");
+static void manage_connectivity(void) {
+    static uint32_t wifi_reconnect_timer = 0;
+    network_mode_t mode = bastao_network_config.mode;
+    bool wifi_connected = wifi_driver_is_connected();
 
+    wifi_reconnect_timer++;
+
+    switch (mode) {
+        case NETWORK_MODE_WIFI_ONLY: {
+            if (!simcom_ppp_is_suspended()) {
+                ESP_LOGI(TAG, "[Orquestrador] Modo WIFI_ONLY: Suspendendo celular.");
+                simcom_ppp_set_suspended(true);
+            }
+            if (!wifi_connected) {
+                if (wifi_reconnect_timer >= 15) {
+                    wifi_reconnect_timer = 0;
+                    ESP_LOGI(TAG, "[Orquestrador] Modo WIFI_ONLY: Wi-Fi desconectado. Tentando reconectar...");
+                    if (strlen(bastao_network_config.wifi.ssid) > 0) {
+                        wifi_driver_connect(bastao_network_config.wifi.ssid, bastao_network_config.wifi.password);
+                    }
+                }
+            } else {
+                wifi_reconnect_timer = 0;
+            }
+            break;
+        }
+
+        case NETWORK_MODE_CELLULAR_ONLY: {
+            if (simcom_ppp_is_suspended()) {
+                ESP_LOGI(TAG, "[Orquestrador] Modo CELLULAR_ONLY: Reativando celular.");
+                simcom_ppp_set_suspended(false);
+            }
+            if (wifi_connected) {
+                ESP_LOGI(TAG, "[Orquestrador] Modo CELLULAR_ONLY: Desconectando Wi-Fi.");
+                wifi_driver_disconnect();
+            }
+            wifi_reconnect_timer = 0;
+            break;
+        }
+
+        case NETWORK_MODE_WIFI_CELLULAR:
+        case NETWORK_MODE_AUTO: {
+            if (wifi_connected) {
+                if (!simcom_ppp_is_suspended()) {
+                    ESP_LOGI(TAG, "[Orquestrador] Wi-Fi conectado. Suspendendo celular para economizar dados/energia.");
+                    simcom_ppp_set_suspended(true);
+                }
+                wifi_reconnect_timer = 0;
+            } else {
+                if (simcom_ppp_is_suspended()) {
+                    ESP_LOGI(TAG, "[Orquestrador] Wi-Fi desconectado. Reativando celular...");
+                    simcom_ppp_set_suspended(false);
+                }
+                if (wifi_reconnect_timer >= 60) {
+                    wifi_reconnect_timer = 0;
+                    ESP_LOGI(TAG, "[Orquestrador] Modo Auto/Dual: Tentando reconectar ao Wi-Fi em segundo plano...");
+                    if (strlen(bastao_network_config.wifi.ssid) > 0) {
+                        wifi_driver_connect(bastao_network_config.wifi.ssid, bastao_network_config.wifi.password);
+                    }
+                }
+            }
+            break;
+        }
+    }
+}
+
+void app_main(void) {
+  ESP_LOGI(TAG, "Inicializando o Bastao-ESP Mesh Coordinator...");
+
+  // Configura nivel de debug para rede e conexao PPP
+  esp_log_level_set("SIMCOM_PPP", ESP_LOG_DEBUG);
+  esp_log_level_set("esp-netif_lwip-ppp", ESP_LOG_DEBUG);
+
+  // ----------------------------------------------------------------
+  // PASSO 0: Inicializa a pilha TCP/IP e o Event Loop do sistema.
+  // DEVE ser chamado ANTES de qualquer modulo de rede (Wi-Fi, PPP).
+  // ----------------------------------------------------------------
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+  // 1. Inicializa e, se necessario, apaga a NVS flash
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
       ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -233,18 +312,18 @@ void app_main(void) {
     ble_mobile_log_enable(true);
   }
 
-  // 2. Instancia a fila global compartilhada para tráfego de dados recebidos do
+  // 2. Instancia a fila global compartilhada para trafego de dados recebidos do
   // STM32
   stm32_data_queue = xQueueCreate(10, sizeof(stm32_data_t));
   if (stm32_data_queue == NULL) {
     ESP_LOGE(TAG,
-             "Falha crítica ao criar a fila stm32_data_queue. Abortando...");
+             "Falha critica ao criar a fila stm32_data_queue. Abortando...");
     return;
   }
 
-  // 3. Inicializa o módulo criptográfico local com a chave AES-256 padrão
+  // 3. Inicializa o modulo criptografico local com a chave AES-256 padrao
   if (secure_payload_init(default_aes_key) != ESP_OK) {
-    ESP_LOGE(TAG, "Falha crítica ao inicializar módulo de segurança.");
+    ESP_LOGE(TAG, "Falha critica ao inicializar modulo de seguranca.");
     return;
   }
 
@@ -258,12 +337,12 @@ void app_main(void) {
     ESP_LOGE(TAG, "Falha ao inicializar GATT Server BLE Mobile.");
   }
 
-  // 5. Inicializa o periférico UART1 para interface com o STM32 (Pinos IO13 e
+  // 5. Inicializa o periferico UART1 para interface com o STM32 (Pinos IO13 e
   // IO14)
   if (stm32_uart_init() != ESP_OK) {
     ESP_LOGE(TAG, "Falha ao inicializar o driver serial do STM32.");
   } else {
-    // 5b. Inicializa o módulo de comandos para o STM32
+    // 5b. Inicializa o modulo de comandos para o STM32
     stm32_cmd_init();
 
     // 6. Dispara a tarefa do FreeRTOS encarregada de ler a serial e parsear os
@@ -273,51 +352,119 @@ void app_main(void) {
     }
   }
 
-  // 7. Dispara a tarefa despachante com prioridade 6 (superior à task serial
-  // para escoamento rápido)
-  if (xTaskCreate(dispatcher_task, "dispatcher_task", 4096, NULL, 6, NULL) !=
+  // 7. Dispara a tarefa despachante com prioridade 6 (superior a task serial
+  // para escoamento rapido)
+  if (xTaskCreate(dispatcher_task, "dispatcher_task", 6144, NULL, 6, NULL) !=
       pdPASS) {
     ESP_LOGE(TAG, "Falha ao iniciar a task dispatcher_task.");
   }
 
   // 8b. Inicializa o publicador MQTT (independente da rede ativa)
-  if (mqtt_publisher_init(&default_mqtt_config) == ESP_OK) {
+  mqtt_publisher_config_t active_mqtt_config = {0};
+  strncpy(active_mqtt_config.broker_uri, bastao_network_config.mqtt.broker_uri, sizeof(active_mqtt_config.broker_uri) - 1);
+  strncpy(active_mqtt_config.client_id, bastao_network_config.mqtt.client_id, sizeof(active_mqtt_config.client_id) - 1);
+  strncpy(active_mqtt_config.topic_telemetry, bastao_network_config.mqtt.topic_telemetry, sizeof(active_mqtt_config.topic_telemetry) - 1);
+  strncpy(active_mqtt_config.topic_gps, bastao_network_config.mqtt.topic_gps, sizeof(active_mqtt_config.topic_gps) - 1);
+
+  // Usa MAC como username MQTT (numero_serie) e chave AES hex como password
+  uint8_t _mac[6];
+  esp_read_mac(_mac, ESP_MAC_WIFI_STA);
+  snprintf(active_mqtt_config.username, sizeof(active_mqtt_config.username),
+           "%02X%02X%02X%02X%02X%02X", _mac[0], _mac[1], _mac[2], _mac[3], _mac[4], _mac[5]);
+  for (int _i = 0; _i < AES_KEY_SIZE_BYTES; _i++) {
+    sprintf(active_mqtt_config.password + (_i * 2), "%02X", default_aes_key[_i]);
+  }
+  ESP_LOGI(TAG, "MQTT username (serial): %s", active_mqtt_config.username);
+
+  if (mqtt_publisher_init(&active_mqtt_config) == ESP_OK) {
     if (mqtt_publisher_task_start(4) != pdPASS) {
-      ESP_LOGE(TAG, "Falha ao iniciar task de publicação MQTT.");
+      ESP_LOGE(TAG, "Falha ao iniciar task de publicacao MQTT.");
     }
+    ESP_LOGI(TAG, "[TESTE] Loop de injecao RFID habilitado (a cada 5min). Remover antes da producao!");
   } else {
     ESP_LOGE(TAG, "Falha ao inicializar cliente MQTT.");
   }
 
   // 8. Inicializa o modem celular SIMCom 7663E e a interface PPP
-  ESP_LOGI(TAG, "Inicializando módulo celular SIMCom 7663E...");
+  ESP_LOGI(TAG, "Inicializando modulo celular SIMCom 7663E...");
   if (simcom_ppp_init() == ESP_OK) {
-    if (simcom_ppp_configure_apn(&default_apn) == ESP_OK) {
+    simcom_apn_config_t active_apn = {0};
+    strncpy(active_apn.apn, bastao_network_config.cellular.apn, sizeof(active_apn.apn) - 1);
+    strncpy(active_apn.user, bastao_network_config.cellular.user, sizeof(active_apn.user) - 1);
+    strncpy(active_apn.password, bastao_network_config.cellular.password, sizeof(active_apn.password) - 1);
+
+    if (simcom_ppp_configure_apn(&active_apn) == ESP_OK) {
       if (!wifi_driver_is_connected()) {
         if (simcom_ppp_connect() == ESP_OK) {
           ESP_LOGI(TAG, "Conectividade celular PPP ativa.");
         } else {
-          ESP_LOGE(TAG, "Falha inicial ao estabelecer sessão PPP (será tentado pelo Watchdog).");
+          ESP_LOGE(TAG, "Falha inicial ao estabelecer sessao PPP (sera tentado pelo Watchdog).");
         }
       } else {
-        ESP_LOGI(TAG, "Wi-Fi ativo. Pulando conexão celular inicial.");
+        ESP_LOGI(TAG, "Wi-Fi ativo. Pulando conexao celular inicial.");
       }
     } else {
-      ESP_LOGE(TAG, "Falha na configuração da APN.");
+      ESP_LOGE(TAG, "Falha na configuracao da APN.");
     }
   } else {
-    ESP_LOGE(TAG, "Falha na inicialização do modem SIMCom.");
+    ESP_LOGE(TAG, "Falha na inicializacao do modem SIMCom.");
   }
 
-  // 10. Inicia o watchdog de reconexão automática do modem (prioridade 3)
+  // 10. Inicia o watchdog de reconexao automatica do modem (prioridade 3)
   simcom_ppp_watchdog_start(3);
 
-  // Loop principal da task de orquestração do sistema
+  // Loop principal da task de orquestracao do sistema
   // Atualiza periodicamente o status do dispositivo para leituras BLE
+  uint32_t gps_tick = 0;
   while (1) {
+    manage_connectivity();
+
     bastao_current_status.ppp_connected = simcom_ppp_is_connected();
     bastao_current_status.mqtt_connected = mqtt_publisher_is_connected();
     ble_mobile_update_status(&bastao_current_status);
+
+    // ================================================================
+    // TEST CODE — Loop de injecao de RFID para validacao de integracao
+    // REMOVER quando STM32 estiver enviando dados reais.
+    // Disparo inicial imediato + repeticoes a cada 5 minutos (300s).
+    // ================================================================
+    if (test_loop_enabled && bastao_current_status.mqtt_connected) {
+      bool should_send = false;
+      if (test_loop_tick == 0) {
+        should_send = true;
+      } else if (test_loop_tick >= 300) {
+        test_loop_tick = 1;
+        should_send = true;
+      }
+      if (should_send) {
+        memset(&test_rfid, 0, sizeof(test_rfid));
+        test_rfid.type = DATA_TYPE_RFID;
+        test_rfid.movement = 1;
+        strcpy(test_rfid.model, "TESTE");
+        strcpy(test_rfid.tag, "BRINCO_INTEGRACAO_001");
+        if (stm32_data_queue != NULL) {
+          xQueueSend(stm32_data_queue, &test_rfid, 0);
+          ESP_LOGI(TAG, "[TESTE] RFID injetado: BRINCO_INTEGRACAO_001 (prox em 5min)");
+        }
+      }
+      test_loop_tick++;
+    }
+
+    // Leitura periodica do GPS (a cada 30s, quando o modem esta em modo AT)
+    // TODO: Para uso com PPP ativo, e necessario suspender PPP temporariamente
+    gps_tick++;
+    if (gps_tick >= 30) {
+      gps_tick = 0;
+      if (!simcom_ppp_is_connected() && !simcom_ppp_is_suspended()) {
+        if (simcom_ppp_get_gps(&gps_data) == ESP_OK && gps_data.valid) {
+          bastao_current_status.gps_latitude = gps_data.latitude;
+          bastao_current_status.gps_longitude = gps_data.longitude;
+          bastao_current_status.gps_fix = true;
+          ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
+                   gps_data.latitude, gps_data.longitude);
+        }
+      }
+    }
 
     esp_power_update();
 

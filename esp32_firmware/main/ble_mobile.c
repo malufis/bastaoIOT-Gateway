@@ -20,6 +20,9 @@
 #include "wifi_driver.h"
 #include "simcom_ppp.h"
 #include "mqtt_publisher.h"
+#include "secure_payload.h"
+#include "private_configs.h"
+#include "esp_mac.h"
 
 #include "esp_bt.h"
 #include "esp_bt_defs.h"
@@ -45,17 +48,17 @@ bastao_device_status_t bastao_current_status = {0};
 char ble_last_tag_json[BLE_MOBILE_ATTR_MAX_LEN] = {0};
 
 network_config_t bastao_network_config = {
-    .wifi.ssid = "bastaoIOT",
-    .wifi.password = "3spB@st@0",
+    .wifi.ssid = PRIVATE_WIFI_SSID,
+    .wifi.password = PRIVATE_WIFI_PASS,
     .wifi.enabled = true,
-    .cellular.apn = "zap.vivo.com.br",
-    .cellular.user = "vivo",
-    .cellular.password = "vivo",
+    .cellular.apn = PRIVATE_APN_NAME,
+    .cellular.user = PRIVATE_APN_USER,
+    .cellular.password = PRIVATE_APN_PASS,
     .cellular.enabled = true,
-    .mqtt.broker_uri = "mqtt://broker.example.com:1883",
-    .mqtt.client_id = "bastao-esp-001",
-    .mqtt.topic_telemetry = "bastao/telemetria",
-    .mqtt.topic_gps = "bastao/gps",
+    .mqtt.broker_uri = PRIVATE_MQTT_URI,
+    .mqtt.client_id = PRIVATE_MQTT_CLIENT_ID,
+    .mqtt.topic_telemetry = PRIVATE_MQTT_TOPIC_TELE,
+    .mqtt.topic_gps = PRIVATE_MQTT_TOPIC_GPS,
     .mode = NETWORK_MODE_AUTO,
 };
 
@@ -99,6 +102,7 @@ enum {
     IDX_CHAR_CELLULAR_CCC, /**< Handle CCCD celular */
     IDX_CHAR_LOG,        /**< Handle declaracao log */
     IDX_CHAR_LOG_VAL,    /**< Handle valor log */
+    IDX_CHAR_LOG_CCC,    /**< Handle CCCD log */
     IDX_NB,              /**< Total de handles */
 };
 
@@ -225,6 +229,12 @@ static const esp_gatts_attr_db_t bastao_gatt_db[IDX_NB] = {
          ESP_GATT_PERM_WRITE_ENC_MITM | ESP_GATT_PERM_READ_ENC_MITM,
          BLE_MOBILE_ATTR_MAX_LEN, 0, NULL}
     },
+    [IDX_CHAR_LOG_CCC] = {
+        {ESP_GATT_AUTO_RSP},
+        {ESP_UUID_LEN_16, (uint8_t *)&char_ccc_uuid,
+         ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+         sizeof(uint16_t), sizeof(ccc_value), (uint8_t *)ccc_value}
+    },
 };
 
 /* --- Funcoes Internas Privadas --- */
@@ -284,7 +294,8 @@ static void save_business_data_to_nvs(const char *json_str) {
 static void format_device_status_json(char *buf, size_t buf_size) {
     snprintf(buf, buf_size,
              "{\"batt\":%.2f,\"ppp\":%s,\"mqtt\":%s,\"mesh\":%s,"
-             "\"gps\":%s,\"lat\":%.6f,\"lon\":%.6f,\"tags\":%lu}",
+             "\"gps\":%s,\"lat\":%.6f,\"lon\":%.6f,\"tags\":%lu,"
+             "\"sim_slot\":%d,\"sim_present\":%s,\"sim_id\":\"%s\"}",
              bastao_current_status.battery_voltage,
              bastao_current_status.ppp_connected ? "true" : "false",
              bastao_current_status.mqtt_connected ? "true" : "false",
@@ -292,7 +303,10 @@ static void format_device_status_json(char *buf, size_t buf_size) {
              bastao_current_status.gps_fix ? "true" : "false",
              bastao_current_status.gps_latitude,
              bastao_current_status.gps_longitude,
-             (unsigned long)bastao_current_status.tags_read_count);
+             (unsigned long)bastao_current_status.tags_read_count,
+             bastao_current_status.active_sim_slot,
+             bastao_current_status.sim_present ? "true" : "false",
+             bastao_current_status.sim_ccid);
 }
 
 /**
@@ -319,12 +333,14 @@ static void format_cellular_status_json(char *buf, size_t buf_size) {
         snprintf(buf, buf_size,
                  "{\"rssi_dbm\":%d,\"ber\":%d,\"tech\":\"%s\","
                  "\"mcc\":%d,\"mnc\":%d,\"op\":\"%s\","
-                 "\"reg\":%s,\"roam\":%s,\"ppp\":%s}",
+                 "\"reg\":%s,\"roam\":%s,\"ppp\":%s,"
+                 "\"rsrp\":%d,\"rsrq\":%d,\"sinr\":%d,\"ceer\":\"%s\"}",
                  cell_status.rssi, cell_status.ber, tech_str,
                  cell_status.mcc, cell_status.mnc, cell_status.operator_name,
                  cell_status.registered ? "true" : "false",
                  cell_status.roaming ? "true" : "false",
-                 cell_status.modem_state == SIMCOM_STATE_PPP_ACTIVE ? "true" : "false");
+                 cell_status.modem_state == SIMCOM_STATE_PPP_ACTIVE ? "true" : "false",
+                 cell_status.rsrp, cell_status.rsrq, cell_status.sinr, cell_status.ceer);
     } else {
         snprintf(buf, buf_size, "{\"error\":\"modem_unavailable\"}");
     }
@@ -361,8 +377,11 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
             break;
         }
 
-        memcpy(handle_table, param->add_attr_tab.handles,
-               sizeof(handle_table));
+        uint16_t num_to_copy = param->add_attr_tab.num_handle;
+        if (num_to_copy > GATTS_NUM_HANDLE) {
+            num_to_copy = GATTS_NUM_HANDLE;
+        }
+        memcpy(handle_table, param->add_attr_tab.handles, num_to_copy * sizeof(uint16_t));
         ESP_LOGI(TAG, "Tabela GATT criada com %d handles.", IDX_NB);
 
         // Inicia o servico GATT
@@ -427,9 +446,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event,
             if (attr_handle == handle_table[IDX_CHAR_CONFIG_W_VAL]) {
                 ESP_LOGI(TAG, "[BLE_RX] Config recebida (%d bytes): %s",
                          len, recv_buf);
-                save_config_to_nvs(recv_buf);
-
-                // TODO: Parsear JSON e atualizar bastao_current_config em RAM
+                ble_mobile_process_config_json(recv_buf);
             }
             else if (attr_handle == handle_table[IDX_CHAR_BUSINESS_W_VAL]) {
                 ESP_LOGI(TAG, "[BLE_RX] Dados de negocio recebidos (%d bytes): %s",
@@ -558,8 +575,12 @@ esp_err_t ble_mobile_init(const char *dev_name) {
         return err;
     }
 
-    // 4. Configura parametros de seguranca BLE (pareamento com MITM)
-    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;
+    // 4. Configura parametros de seguranca BLE (pareamento Just Works + bonding)
+    // NOTA: ESP_LE_AUTH_REQ_SC_MITM_BOND requer IO capability com display/teclado.
+    // Como usamos ESP_IO_CAP_NONE (Just Works), o correto e ESP_LE_AUTH_REQ_BOND,
+    // que habilita bonding sem MITM. MITM pode ser reabilitado quando houver
+    // um display fisico no dispositivo para confirmar o codigo de pareamento.
+    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_BOND;
     esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE; // Just Works (sem display/teclado)
     uint8_t key_size = 16;
     uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
@@ -653,7 +674,7 @@ esp_err_t ble_mobile_load_config_from_nvs(void) {
     err = nvs_get_str(handle, "cfg_json", cfg_json, &required_size);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Config carregada do NVS: %s", cfg_json);
-        // TODO: Parsear JSON com cJSON e preencher bastao_current_config
+        ble_mobile_process_hardware_json(cfg_json);
     } else {
         ESP_LOGW(TAG, "Chave cfg_json nao encontrada no NVS.");
     }
@@ -847,6 +868,92 @@ esp_err_t ble_mobile_process_network_json(const char *json) {
     return ble_mobile_save_network_config(&bastao_network_config);
 }
 
+esp_err_t ble_mobile_process_config_json(const char *json) {
+    if (json == NULL || strlen(json) == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Processando JSON de configuracao remota: %s", json);
+
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) {
+        ESP_LOGE(TAG, "Falha ao parsear JSON de configuracao");
+        return ESP_FAIL;
+    }
+
+    bool is_network = (cJSON_GetObjectItem(root, "wifi") != NULL) ||
+                      (cJSON_GetObjectItem(root, "cellular") != NULL) ||
+                      (cJSON_GetObjectItem(root, "mqtt") != NULL) ||
+                      (cJSON_GetObjectItem(root, "network_mode") != NULL);
+    cJSON_Delete(root);
+
+    if (is_network) {
+        esp_err_t err = ble_mobile_process_network_json(json);
+        if (err == ESP_OK) {
+            ble_mobile_apply_network_config();
+        }
+        return err;
+    } else {
+        save_config_to_nvs(json);
+        return ble_mobile_process_hardware_json(json);
+    }
+}
+
+esp_err_t ble_mobile_process_hardware_json(const char *json) {
+    if (json == NULL || strlen(json) == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Processando JSON de hardware: %s", json);
+
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) {
+        ESP_LOGE(TAG, "Falha ao parsear JSON de hardware");
+        return ESP_FAIL;
+    }
+
+    cJSON *hw = cJSON_GetObjectItem(root, "hardware");
+    if (hw == NULL) {
+        hw = root;
+    }
+
+    cJSON *power = cJSON_GetObjectItem(hw, "yrm100_power");
+    if (power && cJSON_IsNumber(power)) {
+        bastao_current_config.yrm100_power = (uint8_t)power->valueint;
+    }
+
+    cJSON *scan = cJSON_GetObjectItem(hw, "scan_time_ms");
+    if (scan && cJSON_IsNumber(scan)) {
+        bastao_current_config.scan_time_ms = (uint16_t)scan->valueint;
+    }
+
+    cJSON *interval = cJSON_GetObjectItem(hw, "battery_report_interval_s");
+    if (interval && cJSON_IsNumber(interval)) {
+        bastao_current_config.battery_report_interval_s = (uint8_t)interval->valueint;
+    }
+
+    cJSON *wl134_en = cJSON_GetObjectItem(hw, "wl134_enabled");
+    if (wl134_en) {
+        bastao_current_config.wl134_enabled = cJSON_IsTrue(wl134_en) || wl134_en->valueint == 1;
+    }
+
+    cJSON *yrm100_en = cJSON_GetObjectItem(hw, "yrm100_enabled");
+    if (yrm100_en) {
+        bastao_current_config.yrm100_enabled = cJSON_IsTrue(yrm100_en) || yrm100_en->valueint == 1;
+    }
+
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG, "Config de hardware processada: power=%d, scan_time=%d, interval=%d, wl134=%d, yrm100=%d",
+             bastao_current_config.yrm100_power,
+             bastao_current_config.scan_time_ms,
+             bastao_current_config.battery_report_interval_s,
+             bastao_current_config.wl134_enabled,
+             bastao_current_config.yrm100_enabled);
+
+    return ESP_OK;
+}
+
 esp_err_t ble_mobile_apply_network_config(void) {
     ESP_LOGI(TAG, "Aplicando configuracao de rede...");
 
@@ -863,6 +970,22 @@ esp_err_t ble_mobile_apply_network_config(void) {
         strncpy(apn.password, bastao_network_config.cellular.password, sizeof(apn.password) - 1);
         simcom_ppp_configure_apn(&apn);
     }
+
+    // APLICAR CONFIGURACOES MQTT
+    mqtt_publisher_config_t mqtt_pub_cfg = {0};
+    strncpy(mqtt_pub_cfg.broker_uri, bastao_network_config.mqtt.broker_uri, sizeof(mqtt_pub_cfg.broker_uri) - 1);
+    strncpy(mqtt_pub_cfg.client_id, bastao_network_config.mqtt.client_id, sizeof(mqtt_pub_cfg.client_id) - 1);
+    strncpy(mqtt_pub_cfg.topic_telemetry, bastao_network_config.mqtt.topic_telemetry, sizeof(mqtt_pub_cfg.topic_telemetry) - 1);
+    strncpy(mqtt_pub_cfg.topic_gps, bastao_network_config.mqtt.topic_gps, sizeof(mqtt_pub_cfg.topic_gps) - 1);
+
+    // Gera credenciais MQTT dinamicamente (MAC como username, AES key hex como password)
+    uint8_t _mac_ble[6];
+    esp_read_mac(_mac_ble, ESP_MAC_WIFI_STA);
+    snprintf(mqtt_pub_cfg.username, sizeof(mqtt_pub_cfg.username),
+             "%02X%02X%02X%02X%02X%02X", _mac_ble[0], _mac_ble[1], _mac_ble[2], _mac_ble[3], _mac_ble[4], _mac_ble[5]);
+    snprintf(mqtt_pub_cfg.password, sizeof(mqtt_pub_cfg.password), "%s", PRIVATE_AES_KEY_HEX);
+
+    mqtt_publisher_update_config(&mqtt_pub_cfg);
 
     ESP_LOGI(TAG, "Config de rede aplicada com sucesso.");
     return ESP_OK;

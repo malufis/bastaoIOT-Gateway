@@ -25,3 +25,8 @@ Thumbs.db
 !rfid_reader_pdf.txt
 !yrm100_protocol_docx.txt
 !PROJETO_BASTAO.md
+
+# Private configurations
+esp32_firmware/main/private_configs.h
+esp32_firmware/private_configs.env
+

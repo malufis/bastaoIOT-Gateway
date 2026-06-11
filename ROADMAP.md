@@ -9,6 +9,7 @@ Este documento é o plano de trabalho e guia definitivo do estado atual e próxi
 O projeto Bastão-ESP é composto por dois microcontroladores operando em conjunto:
 
 ### 1.1. Firmware STM32 (Módulo de Sensoriamento) - **Concluído**
+
 - **Arquitetura:** STM32CubeIDE (Bare-Metal + HAL) rodando na MCU STM32G070CBTx.
 - **Funcionalidades:**
   - **Leitor WL-134 (LF):** Parsing do protocolo serial a 9600 8N2 via interrupção com buffer circular, conversão LSB-first para decimal e cálculo de checksum XOR.
@@ -17,20 +18,22 @@ O projeto Bastão-ESP é composto por dois microcontroladores operando em conjun
   - **Saída:** Envio de dados formatados em JSON via UART2 a 115200 8N1 para o ESP32.
 
 ### 1.2. Firmware ESP32 (Módulo de Conectividade) - **Concluído**
+
 - **Arquitetura:** ESP-IDF v5.x integrado com FreeRTOS.
 - **Funcionalidades:**
   - **Task UART Receiver:** Escuta de JSONs vindos do STM32 de forma assíncrona.
   - **Módulo de Segurança:** Criptografia simétrica AES-256-CBC com PKCS#7 padding via mbedTLS.
   - **BLE Mesh Coordinator:** Inicialização do stack Mesh no modo Coordenador para comunicação local segura com a Tela K10.
-  - **Conectividade Celular (4G):** Inicialização do modem SIMCom 7663E, estabelecimento de sessão PPP (Point-to-Point Protocol) via ESP-NETIF e watchdog de reconexão automática.
+  - **Conectividade Celular (4G):** Inicialização do modem SIMCom 7663E, estabelecimento de sessão PPP (Point-to-Point Protocol) via ESP-NETIF, detecção e varredura inicial de chips nos slots SIM (Slot 0 e Slot 1) com extração de CCID, e watchdog de reconexão automática.
   - **Cliente MQTT:** Publicação de payloads de telemetria criptografados e GPS sobre a interface PPP.
-  - **BLE Mobile (GATT Server):** Conexão segura com aplicativo mobile, com autenticação MITM/PIN, para sincronização de configurações de hardware e dados de negócio (Fazenda, Lote, Animais) na NVS/SPIFFS.
+  - **BLE Mobile (GATT Server):** Conexão segura com aplicativo mobile, com autenticação MITM/PIN, para sincronização de configurações de hardware e dados de negócio (Fazenda, Lote, Animais) na NVS/SPIFFS, exibindo o status detalhado do SIM (presença, slot ativo e CCID).
   - **Cache Offline (SPIFFS Spooler):** Armazenamento de payloads em cache local se o MQTT estiver indisponível (limite de 95% de espaço). Descarregamento automático em FIFO em segundo plano assim que a rede volta.
   - **OTA HTTPS Manager:** Rotina de atualização HTTPS utilizando `esp_https_ota` com priorização automática de rede (Wi-Fi local se disponível; senão, dados celulares 4G) e rollback seguro do bootloader.
-  - **Wi-Fi STA e Redundância:** Inicialização da interface Wi-Fi STA com conexão fixa (`SSID: bastaoIOT`, `Senha: 3spB@st@0`). Implementação de chaveamento de rota inteligente que suspende a conexão celular PPP do SIMCom 7663E quando o Wi-Fi obtém IP, e a reativa via Watchdog caso o sinal de Wi-Fi caia.
+  - **Wi-Fi STA e Redundância:** Inicialização da interface Wi-Fi STA com conexão fixa (`SSID: bastaoIOT`, `Senha: 3spB@st@0`). Implementação de gerenciador de conectividade centralizado (`manage_connectivity`) que orquestra os modos de rede (Wi-Fi Only, Cellular Only, Wi-Fi & Cellular/Auto) e suaviza as reconexões de Wi-Fi para evitar desconexões da interface celular 4G PPP ativa devido a escaneamentos de rádio incessantes.
   - **Banco de Dados de Animais (Local):** Módulo local `animal_db` que carrega a base JSON de negócios da NVS (`biz_json`, namespace `bastao_biz`) e realiza busca linear sob demanda por tag RFID. Enriquece as mensagens do despachante adicionando nome, peso e lote aos JSONs transmitidos se a tag for encontrada.
 
 ### 1.3. Pipeline de Testes e Validação - **Concluído**
+
 - Scripts de validação em Python (`teste_automatizado/`):
   - `validate_rfid.py`: Validação de decodificação hexadecimal LF/UHF.
   - `verify_encryption.py`: Validação de compatibilidade de criptografia AES.
@@ -48,52 +51,64 @@ O projeto Bastão-ESP é composto por dois microcontroladores operando em conjun
 As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de comutação de rede, a lógica de negócio local com tags, e comandos avançados na nuvem.
 
 ### **Fase 14: Integração de Wi-Fi e Controle de Redundância de Rede** - **Concluído**
-* **Objetivo:** Implementar o driver Wi-Fi Station no ESP32 e a lógica inteligente de alternância automática de redes.
-* **Status:** Concluído e validado localmente com scripts de teste.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Implementar o driver Wi-Fi Station no ESP32 e a lógica inteligente de alternância automática de redes.
+
+- **Status:** Concluído e validado localmente com scripts de teste.
+- **Tarefas Realizadas:**
   - Criado o módulo `wifi_driver.c/.h` gerenciando a interface Wi-Fi STA e os tratadores de eventos de rede IP/WIFI.
   - Adicionado chaveamento de roteamento automático: quando o Wi-Fi obtém IP, o modem celular PPP entra em modo suspenso (via `simcom_ppp_set_suspended(true)`), desligando a interface PPP e impedindo as tentativas de reconexão do watchdog.
   - Quando a rede Wi-Fi é perdida, a suspensão do modem celular é cancelada, permitindo que o watchdog reestabeleça a conexão PPP.
 
 ### **Fase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)** - **Concluído**
-* **Objetivo:** Unificar as tags lidas pelo STM32 com os cadastros locais de animais armazenados na NVS/Flash recebidos via aplicativo mobile.
-* **Status:** Concluído e validado localmente com scripts de teste.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Unificar as tags lidas pelo STM32 com os cadastros locais de animais armazenados na NVS/Flash recebidos via aplicativo mobile.
+
+- **Status:** Concluído e validado localmente com scripts de teste.
+- **Tarefas Realizadas:**
   - Criado o módulo `animal_db.c/.h` que lê do namespace NVS `bastao_biz` a chave `biz_json` contendo o cadastro de animais.
   - O lookup é feito sob demanda via parsing do JSON com a biblioteca `cJSON` para economizar memória RAM estática.
   - O orquestrador `main.c` foi alterado para carregar o banco de dados no boot. Na `dispatcher_task`, buffers foram ampliados para evitar estouro e, ao ler um RFID, a tag é consultada na base local. Em caso de correspondência, gera um JSON enriquecido contendo nome do animal, peso e lote associado. Caso contrário, gera o JSON básico (fallback).
 
 ### **Fase 16: Protocolo de Comandos Remotos via MQTT e BLE** - **Concluído**
-* **Objetivo:** Permitir controle remoto do hardware a partir do Broker MQTT da nuvem ou do aplicativo mobile.
-* **Status:** Concluído e validado.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Permitir controle remoto do hardware a partir do Broker MQTT da nuvem ou do aplicativo mobile.
+
+- **Status:** Concluído e validado.
+- **Tarefas Realizadas:**
   - Criado o módulo `cmd_parser.c/.h` para processar comandos JSON do tópico `bastao/cmd`.
   - Implementados comandos de hardware (buzzer, rfid_on/off, yrm_power, wl_power).
   - Roteamento de comandos do ESP32 para o STM32 via UART2 (`stm32_cmd.c/.h`).
   - Integração do parser no handler de eventos MQTT (`mqtt_publisher.c`).
 
 ### **Fase 17: Tratamento de Alertas e Sinalizações Locais** - **Concluído**
-* **Objetivo:** Adicionar respostas audíveis/visuais (Buzzer, LEDs) e gerenciamento de bateria.
-* **Status:** Concluído e validado.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Adicionar respostas audíveis/visuais (Buzzer, LEDs) e gerenciamento de bateria.
+
+- **Status:** Concluído e validado.
+- **Tarefas Realizadas:**
   - Criado o módulo `alerts.c/.h` no STM32 com detecção de bateria crítica (< 8.4V) e baixa (< 9.6V).
   - Implementado driver de buzzer com padrões: short (100ms), long (500ms), double.
   - Parser de comandos JSON recebidos do ESP32 (`Alerts_ProcessCommand`).
   - Dispatcher do ESP32 envia comandos de buzzer ao ler RFID e em bateria crítica.
 
 ### **Fase 18: Homologação, Economia de Energia e Testes de Campo** - **Concluído**
-* **Objetivo:** Otimizar o consumo elétrico e validar a resiliência em campo.
-* **Status:** Concluído e validado.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Otimizar o consumo elétrico e validar a resiliência em campo.
+
+- **Status:** Concluído e validado.
+- **Tarefas Realizadas:**
   - Criado módulo `power_mgmt.c/.h` no STM32 com modo Stop após 30s de inatividade.
   - Criado módulo `esp_power.c/.h` no ESP32 com light sleep após 60s de inatividade.
   - Wake-up automático por atividade UART em ambos os microcontroladores.
   - Script de teste de estresse `verify_mesh_stress.py` com 4 cenários de teste.
 
 ### **Fase 20: Integração Acelerômetro K10 → Bastão-ESP** - **Concluído**
-* **Objetivo:** Validar que a leitura RFID foi feita no animal (em movimento) e não em superfície estática.
-* **Status:** Concluído.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Validar que a leitura RFID foi feita no animal (em movimento) e não em superfície estática.
+
+- **Status:** Concluído.
+- **Tarefas Realizadas:**
   - Atualizado protocolo de comunicação (`docs/k10_communication_protocol.md`) para incluir dados do acelerômetro.
   - Modificado `k10_mesh_node.c/.h` para enviar dados do acelerômetro (x, y, z em m/s²) e flag de movimento.
   - Modificado `main.c` da K10 para monitorar acelerômetro e detectar movimento (threshold > 0.15g).
@@ -103,9 +118,11 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
   - **Validação:** Se `movement = 1` → leitura válida (animal em movimento). Se `movement = 0` → leitura可疑 (superfície).
 
 ### **Fase 21: Configuração de Rede via App Mobile** - **Concluído**
-* **Objetivo:** Permitir que o aplicativo mobile configure Wi-Fi, APN e MQTT de forma dinâmica.
-* **Status:** Concluído.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Permitir que o aplicativo mobile configure Wi-Fi, APN e MQTT de forma dinâmica.
+
+- **Status:** Concluído.
+- **Tarefas Realizadas:**
   - Expandido `ble_mobile.h` com chaves NVS para Wi-Fi, APN e MQTT.
   - Criadas estruturas `wifi_config_t`, `cellular_config_t`, `mqtt_config_t` e `network_config_t`.
   - Implementadas funções:
@@ -117,9 +134,11 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
   - Criado script de teste `verify_network_config.py`
 
 ### **Fase 22: Monitoramento de Rede Celular** - **Concluído**
-* **Objetivo:** Implementar diagnóstico de rede para testes de campo.
-* **Status:** Concluído.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Implementar diagnóstico de rede para testes de campo.
+
+- **Status:** Concluído.
+- **Tarefas Realizadas:**
   - Criada enum `cellular_tech_t` (NONE, 2G, 3G, 4G_LTE, NB_IOT, UNKNOWN).
   - Criada estrutura `cellular_status_t` com RSSI, BER, tecnologia, MCC/MNC, operador, registro e contadores.
   - Implementada função `simcom_ppp_get_signal_quality()` - Leitura AT+CSQ.
@@ -131,9 +150,11 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
   - Implementada função `format_cellular_status_json()` - Formata JSON para app.
 
 ### **Fase 23: Modos de Baixo Consumo (Sleep Modes)** - **Concluído**
-* **Objetivo:** Otimizar consumo de energia com modos STOP/Deep Sleep no STM32 e Light/Deep Sleep no ESP32.
-* **Status:** Concluído.
-* **Tarefas Realizadas:**
+
+- **Objetivo:** Otimizar consumo de energia com modos STOP/Deep Sleep no STM32 e Light/Deep Sleep no ESP32.
+
+- **Status:** Concluído.
+- **Tarefas Realizadas:**
   - **STM32 (power_mgmt.c/h):**
     - Criada enum `power_mode_t` (ACTIVE, SLEEP_STOP, DEEP_SLEEP).
     - Implementada função `Power_EnterDeepSleep()` com wake-up por LSI RTC.
@@ -153,9 +174,11 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
     - Validados modos de consumo e autonomia de bateria.
 
 ### **Fase 24: Testes de Estresse em Campo - Rede Mesh K10** - **Concluído**
-* **Objetivo:** Validar a resiliência da comunicação BLE Mesh com a Tela K10 em condições adversas.
-* **Status:** Concluído.
-* **Testes Implementados:**
+
+- **Objetivo:** Validar a resiliência da comunicação BLE Mesh com a Tela K10 em condições adversas.
+
+- **Status:** Concluído.
+- **Testes Implementados:**
   - **Flood Test:** 50 mensagens rápidas, 96% entregadas (threshold: 85%)
   - **Packet Loss Test:** 100 mensagens com 20% loss simulado, 78% entregues
   - **Reconnection Test:** 20/20 mensagens antes/depois de desconexão
@@ -163,23 +186,74 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
   - **Interference Test:** 38/50 mensagens com 25% loss, retry recomendado
   - **Retry Test:** Valida mecanismo de retry com ate 3 tentativas
   - **Latency Test:** Latência média < 100ms
-* **Recomendações para Campo:**
+- **Recomendações para Campo:**
   - Implementar mecanismo de retry automático no `mesh_coordinator.c`
   - Adicionar lógica de reordenação de pacotes por sequência
   - Considerar fragmentação de payloads grandes
   - Em ambientes com interferência, reduzir taxa de envio para 1 msg/500ms
 
 ### **Fase 25: Debug Wireless via Telnet/BLE** - **Concluído**
-* **Objetivo:** Permitir visualização de logs em tempo real durante desenvolvimento em campo.
-* **Status:** Concluído.
-* **Implementações:**
+
+- **Objetivo:** Permitir visualização de logs em tempo real durante desenvolvimento em campo.
+
+- **Status:** Concluído.
+- **Implementações:**
   - Criado módulo `esp32_logger.c/.h` com servidor Telnet na porta 23
   - Suporte a múltiplos clientes Telnet (até 3 simultâneos)
   - Buffer circular de logs com 2KB de capacidade
   - Característica GATT 0xFF07 para streaming de logs via BLE
   - Formatação com cores ANSI (V/D/I/W/E)
   - Script Python `esp32_log_viewer.py` para visualização no PC
-* **Uso:**
+- **Uso:**
+
   ```
   python esp32_log_viewer.py <IP_DO_BASTAO>
   ```
+
+### **Fase 26: SMS, Logs de Antena e Subscrições de Configuração** - **Concluído**
+
+- **Objetivo:** Implementar controle e monitoramento avançados pelo modem celular SIMCom 7663E e recepção de parâmetros remotos.
+
+- **Status:** Concluído.
+- **Implementações:**
+  - **Subscrição de Configuração Remota:** Implementada subscrição dinâmica no tópico MQTT `id/<ID>/config` (derivado do IMEI do bastão) no evento de conexão. Payloads JSON recebidos são processados via `ble_mobile_process_config_json` e persistidos na NVS.
+  - **Logs de Erro da Antena/Torre Celular:** Integradas as consultas ativas aos comandos `AT+CPSI?` e `AT+CEER` para ler métricas LTE (RSRP, RSRQ, SINR) e logs de erro de rede. Os dados são atualizados ativamente offline e cacheados quando o PPP está ativo (evitando tráfego AT concorrente) e expostos via característica GATT 0xFF06 / status JSON.
+  - **Módulo SMS de Contingência:** Implementada leitura de mensagens não lidas via `AT+CMGL="REC UNREAD"` na task watchdog quando a sessão PPP está inativa. Suporta comandos `BUZZER`, `RFID [ON/OFF]`, `STATUS` e `RESTART`, respondendo ao remetente com informações de telemetria (bateria, rede, slot SIM ativo, CCID e coordenadas de GPS com indicador de fix).
+
+### **Fase 27: Orquestrador de Conectividade Inteligente e Redundância Dual SIM** - **Concluído**
+
+- **Objetivo:** Ajustar a conectividade do Bastão-ESP para suportar múltiplos modos de rede, realizar detecção inicial e extração de CCID em slots Dual SIM, e resolver instabilidades causadas por tentativas de varredura Wi-Fi incessantes sobre o canal de RF do celular.
+
+- **Status:** Concluído.
+- **Tarefas Realizadas:**
+  - **Detecção de SIM e CCID:** Implementada varredura automática de inicialização que sonda o Slot 0 e falls back para o Slot 1 se necessário, extraindo o CCID (via `AT+CCID`) e validando o chip (via `AT+CPIN?`). Os atributos `sim_present`, `active_sim_slot` e `sim_ccid` são atualizados e expostos no status GATT/JSON.
+  - **Suavização do Driver Wi-Fi:** Removido o loop imediato de reconexão do event handler de Wi-Fi STA. Criada a função de desacoplamento `wifi_driver_disconnect()` para evitar o conflito de declarações de Wi-Fi na aplicação.
+  - **Orquestrador de Conectividade:** Criada a máquina de estados centralizada `manage_connectivity()` com suporte aos modos de rede (Wi-Fi Only, Cellular Only, Wi-Fi & Cellular/Auto):
+    - `NETWORK_MODE_WIFI_ONLY`: Suspende dados celulares, tenta reconectar Wi-Fi a cada 15 segundos.
+    - `NETWORK_MODE_CELLULAR_ONLY`: Mantém celular ativo, garante Wi-Fi desligado.
+    - `NETWORK_MODE_WIFI_CELLULAR` / `NETWORK_MODE_AUTO`: Quando Wi-Fi está conectado, suspende o 4G PPP. Quando Wi-Fi cai, reativa o 4G PPP imediatamente e executa varreduras de Wi-Fi suaves em background a cada 60 segundos para evitar queda da rede celular ativa.
+
+### **Fase 28: Integracao MQTT com sistemaBastao** - **Concluido**
+
+- **Objetivo:** Estabelecer o fluxo completo de telemetria do Bastao-ESP ate o banco PostgreSQL do sistemaBastao (https://github.com/malufis/sistemaBastao), validando com payload ficticio.
+
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - **28.1 — Alinhamento do Topico MQTT:** Topico alterado para `agro/bastao/{mac}/telemetry` (compativel com subscribe do sistemaBastao).
+  - **28.2 — IV Aleatorio no Payload:** `secure_payload.c` modificado para gerar IV aleatorio via `esp_fill_random()` e prefixa-lo (16 bytes) ao ciphertext no output hex.
+  - **28.3 — Padronizacao do JSON de Telemetria:** dispatcher_task enriquece payload com campos `id_brinco`, `latitude`, `longitude`, `nivel_bateria`, `timestamp_rtc` para o sistemaBastao.
+  - **28.4 — Credenciais MQTT por numero_serie:** Usa MAC do ESP32 como username MQTT e chave AES (hex) como password, conforme esperado pelo `mqtt_usuarios` do sistema.
+  - **28.5 — Script de Teste:** Criado `teste_automatizado/simular_envio_bastao.py` para validar o fluxo completo sem hardware.
+- **Validacao:**
+  - Topico MQTT `agro/bastao/TESTE001/telemetry` publicado e recebido por subscriber ([OK])
+  - Payload criptografado com IV aleatorio decifrado corretamente ([OK])
+  - Compatibilidade `secure_payload.c` (ESP32) ↔ `crypto.py` (sistemaBastao) verificada ([OK])
+  - Script `verify_mqtt_payload.py` atualizado e aprovado ([OK])
+  - Script `simular_envio_bastao.py` funcional com broker standalone ([OK])
+  - **28.6 — Teste Real com ESP32 + 4G:** Conexao PPP estabelecida, MQTT conectado ao broker `209.50.240.55:1883`, payload criptografado enviado ([OK]).
+  - **28.7 — Cadastro de Bastao via API:** Fazenda `Fazenda Teste Integracao` e bastao `206EF1D4D574` cadastrados no sistemaBastao ([OK]).
+  - **28.8 — Keepalive Ajustado:** MQTT keepalive alterado de 10800s para 60s ([OK]).
+  - **28.9 — Loop de Teste RFID:** Injecao periodica de RFID a cada 5 minutos via `test_loop_enabled` em `main.c`.
+    - **⚠ TEST CODE — deve ser removido antes da producao.**
+    - Documentado com `@warning` no codigo e neste roadmap.
+  - **28.10 — Config Centralizada via .env:** `generate_config.py` criado, `private_configs.env` como fonte unica de config.

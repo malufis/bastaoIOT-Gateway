@@ -525,6 +525,21 @@ K10 (gui_task, a cada 500ms):
 
 ---
 
+## Sessão 26 — Filtro e Média da Leitura de Bateria STM32
+**Data:** 2026-06-23
+**Objetivo:** Aumentar a precisão e estabilidade da leitura de tensão da bateria principal no STM32 eliminando ruídos.
+
+**Problemas Resolvidos:**
+- A leitura de tensão sofria de pequenas variações instantâneas (ruídos de ADC).
+- Alterada a quantidade de amostras da média móvel de `8` para `10` em `battery_monitor.h`.
+- Modificada a função `Battery_Read()` em `battery_monitor.c` para colher 10 amostras consecutivas do ADC e tirar a média delas antes de inserir o valor na fila da média móvel.
+
+**Modificações:**
+- `stm32_firmware/Core/Inc/battery_monitor.h`: Aumentado `BATTERY_SAMPLES` de 8 para 10.
+- `stm32_firmware/Core/Src/battery_monitor.c`: Modificada `Battery_Read()` para tirar a média de 10 leituras consecutivas do ADC.
+
+---
+
 # Guia de Referência: Agents e Skills do Projeto Bastao-ESP
 
 ## Agents Disponíveis

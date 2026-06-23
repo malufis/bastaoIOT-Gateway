@@ -28,10 +28,21 @@ void Battery_Read(void)
     sConfig.SamplingTime = ADC_SAMPLINGTIME_COMMON_1;
     HAL_ADC_ConfigChannel(&hadc1, &sConfig);
 
+    uint32_t sum_raw = 0;
+    uint8_t success_count = 0;
+
     HAL_ADC_Start(&hadc1);
-    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
-        uint32_t val = HAL_ADC_GetValue(&hadc1);
-        float v = ((float)val * 3.3f / 4095.0f) * 11.0f;
+    for (int i = 0; i < 10; i++) {
+        if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK) {
+            sum_raw += HAL_ADC_GetValue(&hadc1);
+            success_count++;
+        }
+    }
+    HAL_ADC_Stop(&hadc1);
+
+    if (success_count > 0) {
+        float avg_raw = (float)sum_raw / (float)success_count;
+        float v = (avg_raw * 3.3f / 4095.0f) * BATTERY_DIVIDER_RATIO;
 
         battery_samples[sample_index] = v;
         sample_index = (sample_index + 1) % BATTERY_SAMPLES;
@@ -46,7 +57,6 @@ void Battery_Read(void)
         }
         battery_voltage = sum / (float)count;
     }
-    HAL_ADC_Stop(&hadc1);
 }
 
 float Battery_GetVoltage(void)

@@ -11,6 +11,9 @@ extern UART_HandleTypeDef huart4;
 static RFID_Buffer_t buffer_yrm100;
 static RFID_Buffer_t buffer_wl134;
 
+static uint16_t yrm100_overflow_count = 0;
+static uint16_t wl134_overflow_count = 0;
+
 static void reverse_str(char *str, int len)
 {
     int i = 0;
@@ -21,6 +24,15 @@ static void reverse_str(char *str, int len)
         str[j] = temp;
         i++;
         j--;
+    }
+}
+
+static void format_uint64_padded(char *buf, uint64_t val, int pad_len)
+{
+    buf[pad_len] = '\0';
+    for (int i = pad_len - 1; i >= 0; i--) {
+        buf[i] = '0' + (val % 10);
+        val /= 10;
     }
 }
 
@@ -42,13 +54,23 @@ void RFID_Init(void)
 {
     memset(&buffer_yrm100, 0, sizeof(RFID_Buffer_t));
     memset(&buffer_wl134, 0, sizeof(RFID_Buffer_t));
+    yrm100_overflow_count = 0;
+    wl134_overflow_count = 0;
 }
 
 void RFID_StoreByte(uint8_t byte, uint8_t is_yrm100)
 {
     RFID_Buffer_t *buf = is_yrm100 ? &buffer_yrm100 : &buffer_wl134;
+    uint16_t next_head = (buf->head + 1) % RFID_BUFFER_SIZE;
+    if (next_head == buf->tail) {
+        if (is_yrm100)
+            yrm100_overflow_count++;
+        else
+            wl134_overflow_count++;
+        return;
+    }
     buf->raw_data[buf->head] = byte;
-    buf->head = (buf->head + 1) % RFID_BUFFER_SIZE;
+    buf->head = next_head;
 }
 
 uint8_t RFID_HasData(uint8_t is_yrm100)
@@ -132,9 +154,12 @@ void RFID_Process_WL134(void)
                         uint64_t card_dec = hex_to_uint64(card_hex);
                         uint32_t country_dec = (uint32_t)hex_to_uint64(country_hex);
 
+                        char card_dec_str[24];
+                        format_uint64_padded(card_dec_str, card_dec, 12);
+
                         char json[128];
-                        sprintf(json, "{\"type\":\"rfid\",\"model\":\"WL134\",\"tag\":\"%03lu%012llu\"}\n",
-                                (unsigned long)country_dec, (unsigned long long)card_dec);
+                        sprintf(json, "{\"type\":\"rfid\",\"model\":\"WL134\",\"tag\":\"%03lu%s\"}\n",
+                                (unsigned long)country_dec, card_dec_str);
                         HAL_UART_Transmit(&huart2, (uint8_t *)json, strlen(json), 100);
 
                         buffer_wl134.tail = (buffer_wl134.tail + 30) % RFID_BUFFER_SIZE;
@@ -147,4 +172,17 @@ void RFID_Process_WL134(void)
         }
         buffer_wl134.tail = (buffer_wl134.tail + 1) % RFID_BUFFER_SIZE;
     }
+}
+
+uint16_t RFID_GetOverflowCount(uint8_t is_yrm100)
+{
+    return is_yrm100 ? yrm100_overflow_count : wl134_overflow_count;
+}
+
+void RFID_ResetOverflowCount(uint8_t is_yrm100)
+{
+    if (is_yrm100)
+        yrm100_overflow_count = 0;
+    else
+        wl134_overflow_count = 0;
 }

@@ -510,6 +510,21 @@ K10 (gui_task, a cada 500ms):
 
 ---
 
+## Sessão 25 — Correção na Formatação de Tag RFID WL-134 (newlib-nano %llu Bug)
+**Data:** 2026-06-23
+**Objetivo:** Corrigir a formatação do código do brinco (RFID WL-134) que vinha incorreto e truncado como `90000000000000lu`.
+
+**Problemas Resolvidos:**
+- O formato de tag FDX-B continha a string `90000000000000lu` devido à limitação da biblioteca padrão `newlib-nano` usada no STM32, que não possui suporte habilitado para inteiros de 64 bits (`long long`) via `%llu` no `sprintf`. O compilador interpretava `%llu` como `%lu` (exibindo os 32 bits superiores/inferiores zerados) seguidos de um sufixo literal `"lu"`.
+- Implementada a função auxiliar `format_uint64_padded` para conversão e formatação direta de `uint64_t` sem depender do suporte libc.
+
+**Modificações:**
+- `stm32_firmware/Core/Src/rfid_parser.c`:
+  - Adicionado helper `format_uint64_padded()`.
+  - Atualizada a geração do JSON RFID em `RFID_Process_WL134()` para usar a string convertida manualmente.
+
+---
+
 # Guia de Referência: Agents e Skills do Projeto Bastao-ESP
 
 ## Agents Disponíveis

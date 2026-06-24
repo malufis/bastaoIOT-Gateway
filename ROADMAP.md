@@ -24,12 +24,12 @@ O projeto Bastão-ESP é composto por dois microcontroladores operando em conjun
   - **Task UART Receiver:** Escuta de JSONs vindos do STM32 de forma assíncrona.
   - **Módulo de Segurança:** Criptografia simétrica AES-256-CBC com PKCS#7 padding via mbedTLS.
   - **BLE Mesh Coordinator:** Inicialização do stack Mesh no modo Coordenador para comunicação local segura com a Tela K10.
-  - **Conectividade Celular (4G):** Inicialização do modem SIMCom 7663E, estabelecimento de sessão PPP (Point-to-Point Protocol) via ESP-NETIF, detecção e varredura inicial de chips nos slots SIM (Slot 0 e Slot 1) com extração de CCID, e watchdog de reconexão automática.
-  - **Cliente MQTT:** Publicação de payloads de telemetria criptografados e GPS sobre a interface PPP.
+  - **Conectividade Celular (4G):** Inicialização do modem SIMCom 7663E, estabelecimento de conexão direta via comandos AT utilizando o motor MQTT integrado do próprio modem (sem PPP), com suporte a Dual SIM (Slot 0 e Slot 1) com CCID e watchdog de reconexão automática.
+  - **Cliente MQTT:** Publicação de payloads de telemetria criptografados e GPS sobre a interface ativa (Wi-Fi local via esp_mqtt nativo, ou Celular 4G via comandos AT-MQTT integrados no modem SIMCom).
   - **BLE Mobile (GATT Server):** Conexão segura com aplicativo mobile, com autenticação MITM/PIN, para sincronização de configurações de hardware e dados de negócio (Fazenda, Lote, Animais) na NVS/SPIFFS, exibindo o status detalhado do SIM (presença, slot ativo e CCID).
   - **Cache Offline (SPIFFS Spooler):** Armazenamento de payloads em cache local se o MQTT estiver indisponível (limite de 95% de espaço). Descarregamento automático em FIFO em segundo plano assim que a rede volta.
-  - **OTA HTTPS Manager:** Rotina de atualização HTTPS utilizando `esp_https_ota` com priorização automática de rede (Wi-Fi local se disponível; senão, dados celulares 4G) e rollback seguro do bootloader.
-  - **Wi-Fi STA e Redundância:** Inicialização da interface Wi-Fi STA com conexão fixa (`SSID: bastaoIOT`, `Senha: 3spB@st@0`). Implementação de gerenciador de conectividade centralizado (`manage_connectivity`) que orquestra os modos de rede (Wi-Fi Only, Cellular Only, Wi-Fi & Cellular/Auto) e suaviza as reconexões de Wi-Fi para evitar desconexões da interface celular 4G PPP ativa devido a escaneamentos de rádio incessantes.
+  - **OTA HTTPS Manager:** Rotina de atualização HTTPS utilizando `esp_https_ota` com suporte de rede (Wi-Fi local apenas, devido à remoção de roteamento celular TCP/IP nativo) e rollback seguro do bootloader.
+  - **Wi-Fi STA e Redundância:** Inicialização da interface Wi-Fi STA com conexão fixa (`SSID: bastaoIOT`, `Senha: 3spB@st@0`). Implementação de gerenciador de conectividade centralizado (`manage_connectivity`) que orquestra os modos de rede (Wi-Fi Only, Cellular Only, Wi-Fi & Cellular/Auto) e suaviza as reconexões de Wi-Fi para evitar desconexões da sessão celular 4G MQTT ativa.
   - **Banco de Dados de Animais (Local):** Módulo local `animal_db` que carrega a base JSON de negócios da NVS (`biz_json`, namespace `bastao_biz`) e realiza busca linear sob demanda por tag RFID. Enriquece as mensagens do despachante adicionando nome, peso e lote aos JSONs transmitidos se a tag for encontrada.
 
 ### 1.3. Pipeline de Testes e Validação - **Concluído**
@@ -57,8 +57,8 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
 - **Status:** Concluído e validado localmente com scripts de teste.
 - **Tarefas Realizadas:**
   - Criado o módulo `wifi_driver.c/.h` gerenciando a interface Wi-Fi STA e os tratadores de eventos de rede IP/WIFI.
-  - Adicionado chaveamento de roteamento automático: quando o Wi-Fi obtém IP, o modem celular PPP entra em modo suspenso (via `simcom_ppp_set_suspended(true)`), desligando a interface PPP e impedindo as tentativas de reconexão do watchdog.
-  - Quando a rede Wi-Fi é perdida, a suspensão do modem celular é cancelada, permitindo que o watchdog reestabeleça a conexão PPP.
+  - Adicionado chaveamento de roteamento automático: quando o Wi-Fi obtém IP, o modem celular entra em modo suspenso (via `simcom_driver_set_suspended(true)`), desligando a conexão MQTT celular e impedindo as tentativas de reconexão do watchdog.
+  - Quando a rede Wi-Fi é perdida, a suspensão do modem celular é cancelada, permitindo que o watchdog reestabeleça a conexão.
 
 ### **Fase 15: Associação e Lógica de Negócio Local (Farm, Lot, Animal)** - **Concluído**
 
@@ -298,3 +298,218 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
   - **31.2 — `verify_uart_stress.py`:** 13 cenarios de estresse: burst de 20/50/100 tags, burst misto YRM100+WL134, burst com interrupcao de bateria. Documenta que fila de 20 slots e suficiente para uso real (1-10 tags/s), mas bursts >20 tags sem consumo simultaneo podem perder dados.
   - **31.3 — `verify_bidirectional.py`:** 22 testes de comandos bidirecionais: 3 padrões de buzzer, 6 comandos de power, alertas STM32, heartbeat como ACK, roteamento de comandos via `stm32_cmd.c`.
   - **31.4 — `verify_sleep_wake_uart.py`:** 18 testes de sleep/wake: timeout 30s STOP, wake por UART, wake por RFID, ciclo completo, light sleep ESP32.
+
+---
+
+### **Fase 32: Reset STM32 via GPIO19 e Watchdog com Grace Period** - **Concluido**
+
+- **Objetivo:** Implementar controle de reset do STM32 via GPIO do ESP32 e watchdog inteligente com tolerancia ao tempo de boot.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **32.1 — Pino de reset (GPIO19):** Adicionado `STM32_RESET_PIN GPIO_NUM_19` em `stm32_uart.h`.
+  - **32.2 — `stm32_uart_reset_init()`:** Configura GPIO19 como **push-pull** (inicial **LOW**). O GPIO19 aciona um **transistor NPN** que controla o NRST do STM32 com logica **invertida**: LOW = STM32 roda, HIGH = STM32 em reset.
+  - **32.3 — `stm32_uart_reset_stm32()`:** Gera pulso de **HIGH** por 100ms (transistor ON, NRST LOW), depois retorna a LOW (transistor OFF, NRST HIGH). O STM32 e reiniciado.
+  - **32.4 — Reset na inicializacao:** ESP32 aplica reset no STM32 apos 500ms de boot para garantir sincronizacao do estado.
+  - **32.5 — Watchdog com grace period:** Substituido contador fixo de 3 ciclos por logica que so conta falhas apos o primeiro heartbeat recebido (`stm32_uart_has_ever_been_alive()`). Aumentado limiar para 120 ciclos (~120s) para evitar loop infinito de reset durante boot do STM32 (que leva ~5s para enviar primeiro heartbeat).
+  - **32.6 — `stm32_uart_has_ever_been_alive()`:** Nova funcao publica que retorna se ao menos um heartbeat foi recebido desde o boot.
+  - **32.7 — Correcao de comentarios:** "GPIO23" corrigido para "GPIO19" em `stm32_uart.h` e `main.c`.
+  - **32.8 — Circuito de reset com transistor:** Documentado em `PROJETO_BASTAO.md` o schema do transistor NPN entre GPIO19 e NRST (logica invertida).
+
+### **Fase 33: Filtro de Deduplicacao de Leituras RFID** - **Concluido**
+
+- **Objetivo:** Evitar multiplos envios da mesma tag RFID lida repetidamente em intervalo curto (<1s).
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **33.1 — Criado modulo `rfid_dedup.c/.h`:** Tabela circular com 64 entradas para armazenar ultimas tags lidas.
+  - **33.2 — Criterios de dedup:**
+    - Mesma tag + mesmo modelo de leitor
+    - Intervalo < 10 segundos (`RFID_DEDUP_WINDOW_MS`)
+    - GPS proximo (< 50m de raio, `RFID_DEDUP_GPS_RADIUS_M`)
+    - Se GPS indisponivel, decisao apenas por tag + tempo
+  - **33.3 — Insercao no pipeline:** Chamada `rfid_dedup_is_duplicate()` no `dispatcher_task` antes de processar a leitura RFID. Se duplicata, usa `continue` para pular processamento, criptografia e envio MQTT/Mesh.
+  - **33.4 — Integracao:** `rfid_dedup_init()` chamado em `app_main()`, arquivo adicionado ao `CMakeLists.txt`.
+
+### **Fase 34: Wake Sources RFID no STM32 Sleep** - **Concluido**
+
+- **Objetivo:** Garantir que o STM32 acorde do modo STOP quando dados chegarem dos leitores RFID (WL-134 e YRM100), nao apenas via comando UART do ESP32.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **34.1 — `HAL_UARTEx_EnableStopMode(&huart3)`:** Habilitado USART3 (WL-134) como fonte de wake no `Power_Sleep()`.
+  - **34.2 — `HAL_UARTEx_EnableStopMode(&huart4)`:** Habilitado USART4 (YRM100) como fonte de wake no `Power_Sleep()`.
+  - **34.3 — `DisableStopMode` correspondente:** Adicionado desabilitacao ao sair do STOP mode para ambos os perifericos.
+  - **Impacto:** STM32 pode agora ser acordado por dados RFID mesmo em repouso, eliminando janelas de dados perdidos.
+
+---
+
+### **Fase 35: Correcao do Circuito de Reset com Transistor NPN** - **Concluido**
+
+- **Objetivo:** Corrigir a logica de reset do STM32 considerando o transistor NPN entre GPIO19 e NRST (logica invertida).
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **35.1 — Logica invertida:** Descoberto que GPIO19 HIGH → transistor ON → NRST LOW (reset). GPIO19 LOW → transistor OFF → NRST HIGH (roda).
+  - **35.2 — Modo Push-Pull:** Alterado de `GPIO_MODE_OUTPUT_OD` para `GPIO_MODE_OUTPUT` (push-pull) para acionar corretamente o transistor.
+  - **35.3 — `reset_init`:** Inicializa pino em LOW (transistor OFF) para STM32 rodar desde o boot.
+  - **35.4 — `reset_stm32`:** Corrigido pulso: HIGH por 100ms (reset), depois LOW (roda).
+
+### **Fase 36: Filtro de Deduplicacao RFID (rfid_dedup)** - **Concluido**
+
+- **Objetivo:** Evitar multiplos envios da mesma tag lida em intervalo <1s.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **36.1 — Tabela circular:** 64 entradas com tag, modelo, timestamp e GPS.
+  - **36.2 — Criterios:** Mesma tag + modelo + janela <10s + GPS <50m (se disponivel).
+  - **36.3 — Integracao:** `rfid_dedup_is_duplicate()` chamado no `dispatcher_task` antes de processar RFID.
+
+### **Fase 37: Gerenciamento de Chip SIM (DSSS)** - **Concluido**
+
+- **Objetivo:** Implementar troca segura de chip SIM em modo DSSS com comando proprietario `AT*SELECTSIMSLOT`.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **37.1 — Comando correto:** Substituido `AT+SWITCHSIM` por `AT*SELECTSIMSLOT` (proprietario, com `*`).
+  - **37.2 — Sequencia DSSS:** `AT+CFUN=0` (desliga radio) → `AT*SELECTSIMSLOT=<slot>` → `AT+CFUN=1` (religa) → espera 5s → `AT+CPIN?`.
+  - **37.3 — `at_init_sequence`:** Sondagem dos 2 slots com sequencia DSSS completa.
+  - **37.4 — Watchdog:** Swap de slot automatico se `sim_present == false`.
+  - **37.5 — Fallbacks removidos:** `AT+SWITCHSIM` e `AT+DUALSIM` removidos (comandos de outra serie).
+  - **37.6 — CCID corrigido:** `AT+CCID` → `AT+CICCID` (comando correto do manual).
+
+### **Fase 38: Sincronizacao de Horario (Torre + SNTP)** - **Concluido**
+
+- **Objetivo:** Garantir que o timestamp dos payloads MQTT tenha data/hora correta.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **38.1 — `simcom_ppp_sync_time_from_tower()`:** Leitura da hora via `AT+CCLK?`, parse do formato `"yy/MM/dd,hh:mm:ss±zz"` e ajuste via `settimeofday()`.
+  - **38.2 — SNTP:** Inicializacao do cliente SNTP com servidores `pool.ntp.org`, `a.ntp.br`, `b.ntp.br` para sync via Wi-Fi.
+  - **38.3 — Logica no loop principal:** Se `!time_is_synced()` e PPP ativo, tenta torre; SNTP roda em background.
+  - **38.4 — Log `[HB]`:** Heartbeat a cada ~10s com horario formatado, status GPS, STM32, PPP e MQTT.
+  - **38.5 — Log `[MQTT_ENVIO]`:** Debug do payload antes de criptografar, mostrando tag, GPS e timestamp.
+
+---
+
+### **Fase 39: Correcao Sleep STM32 e Wake via UART** - **Concluido**
+
+- **Objetivo:** Aumentar timeout de sleep para evitar travamentos e garantir wake confiavel via UART.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **39.1 — Timeout:** `POWER_SLEEP_TIMEOUT_MS` alterado de 30s para **120s** (2 min).
+  - **39.2 — Log sleep/wake:** STM32 envia JSON `{"type":"power","action":"sleep/wake"}` via UART2.
+  - **39.3 — Re-arm RX:** `HAL_UART_Receive_IT()` chamado apos wake para huart2/3/4 (seguranca).
+  - **39.4 — Wake preventivo:** ESP32 envia `\n` apos 60s sem heartbeat para acordar STM32.
+  - **39.5 — Parser power:** `DATA_TYPE_POWER` adicionado no `stm32_uart.c` (elimina warning).
+
+### **Fase 40: Otimizacao da Leitura UART (Blocos) e Core Pinning** - **Concluido**
+
+- **Objetivo:** Acelerar leitura dos dados do STM32 e isolar CPU por nucleo.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **40.1 — Leitura em blocos:** `uart_read_bytes()` alterado de 1 byte (timeout 20ms) para **1024 bytes** por chamada. Linha RFID de 60 bytes processada em <5ms (antes 1.2s).
+  - **40.2 — Core pinning:** Todas as tarefas fixadas por nucleo:
+    - **Core 0:** `stm32_uart_rx_task` (prio 7), `dispatcher_task` (prio 6)
+    - **Core 1:** `mqtt_pub_task`, `simcom_watchdog`, `ppp_rx_task`, `ota_task`, `cache_sync`, `logger`
+  - **40.3 — Buffers:** Alocacao de buffer de chunk separado do buffer de linha no RX task.
+
+### **Fase 41: GPS — Logs de Diagnostico Detalhados** - **Concluido**
+
+- **Objetivo:** Adicionar logs `[GPS]` para depuracao da aquisicao de posicao.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **41.1 — Logs INFO:** Todas as etapas do GPS agora usam `ESP_LOGI` (antes `LOGD`), visiveis em console normal.
+  - **41.2 — Cold start:** Log de retorno de `AT+CGPSCOLD` e `AT+CGPS=1`.
+  - **41.3 — Polling:** Log a cada tentativa com numero da tentativa/total.
+  - **41.4 — Parse:** Log do resultado do parse com `parsed`, `fix_mode`, `lat_raw`, `lon_raw`.
+  - **41.5 — Fix:** Log completo com fix_mode, lat, lon, alt, velocidade.
+
+---
+
+### **Fase 42: Transição de PPP para Comandos AT Diretos (SIMCom MQTT)** - **Concluido**
+
+- **Objetivo:** Substituir a pilha PPP e sua integração LwIP no modem celular por conexões diretas via comandos AT, utilizando o motor MQTT interno do SIMCom 7663E.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **42.1 — Abandono do PPP:** Removido o uso de `esp_netif_ppp` e a dependência do stack TCP/IP nativo do ESP32 para rotas celulares.
+  - **42.2 — Novo Driver Serial (`simcom_driver.c/.h`):** Desenvolvida tarefa contínua `simcom_uart_rx_task` encarregada de parsear URCs (`+CMQTTDELIVER` para mensagens de subscrição e `+CMQTTCONNLOST`) e capturar respostas síncronas de comandos AT por meio de controle de semáforos.
+  - **42.3 — Roteamento Dinâmico de Publicação (`mqtt_publisher.c`):** Atualizada a fila e tarefa de envio para rotear mensagens dinamicamente: usa o cliente nativo `esp_mqtt` quando Wi-Fi está ativo, e o cliente `simcom_driver` quando operando sob rede celular 4G.
+  - **42.4 — Restrição de OTA ao Wi-Fi:** Atualizada a rotina de atualização `ota_manager.c` para permitir downloads HTTPS apenas sob cobertura de Wi-Fi, reportando erro se disparada em 4G (devido à ausência de gateway PPP).
+   - **42.5 — Validação:** Compilação com compilador ESP-IDF validada com sucesso.
+
+---
+
+### **Fase 43: BLE Mesh — Correção CID e Comunicação Coordenador ↔ K10** - **Concluido**
+
+- **Objetivo:** Estabelecer comunicação funcional entre coordenador ESP32 e display K10 via BLE Mesh.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **43.1 — CID Fix:** Descoberto bug crítico: CID=0xFFFF conflita com CID_NVAL do ESP-IDF v5.4. Mudado para 0x02A5 (Espressif) em `mesh_coordinator.c` e `k10_mesh_node.c`.
+  - **43.2 — Inicialização assíncrona:** Refatorado provisioner para chain de eventos: `PROV_ENABLE_COMP_EVT` → `ADD_LOCAL_APP_KEY_COMP_EVT` → `BIND_APP_KEY_TO_MODEL_COMP_EVT`.
+  - **43.3 — Flags de estado:** Adicionado `local_model_bound`, movido `k10_provisioned=true` para evento `MODEL_APP_BIND`, retry em falha de APP_KEY_ADD.
+  - **43.4 — Persistência NVS na K10:** `CONFIG_BLE_MESH_SETTINGS=y` adicionado para persistir subnet entre reboots.
+  - **43.5 — GATT Service Change:** `CONFIG_BT_GATTS_SEND_SERVICE_CHANGE_MANUAL=y` adicionado para eliminar warnings.
+  - **43.6 — Envio JSON plain:** Removida criptografia AES-256-CBC do path BLE Mesh. K10 não descriptografa. Enviado JSON simples.
+  - **43.7 — Hello world removido:** `mesh_coordinator_send_hello_test()` removido após validação da comunicação.
+
+### **Fase 44: GPS + Celular na Tela K10** - **Concluido**
+
+- **Objetivo:** Enviar coordenadas GPS e status da rede celular do Coordenador para o display K10.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **44.1 — GPS periódico:** Coordenador envia JSON GPS a cada 30s via `mesh_coordinator_send_data()`.
+  - **44.2 — Cell periódico:** Coordenador envia JSON com RSSI, conectividade e operadora a cada 60s.
+  - **44.3 — Parsing K10:** Adicionados parsers para `"type":"gps"` e `"type":"cell"` em `k10_mesh_process_payload()`.
+  - **44.4 — Structs K10:** `k10_gps_data_t` (lat, lon, fix, alt, speed) e `k10_cell_status_t` (rssi, connected, operator_name) em `k10_mesh_node.h`.
+  - **44.5 — GUI K10:** `lbl_gps_coords` atualizado com dados reais (verde) ou "GPS: SEM SINAL" (vermelho). `icon_4g` fica verde (conectado) ou vermelho (desconectado).
+  - **44.6 — Polling no gui_task:** GPS e Cell lidos a cada 500ms no loop principal da K10.
+
+### **Fase 45: Otimização SIMCom (Captura de Tags) + GPS Hot Start** - **Concluido**
+
+- **Objetivo:** Sanar perdas de leituras de tags por conflitos seriais de comandos AT no modem SIMCom 7663E e configurar GPS para Hot Start.
+
+- **Status:** Concluido.
+
+- **Tarefas Realizadas:**
+  - **45.1 — Fila MQTT Assíncrona no CELLULAR_ONLY:** A fila `mqtt_publish_queue` e a task `mqtt_pub_task` agora rodam sempre. O dispatcher enfileira tags sem bloquear a thread principal em chamadas AT seriais.
+  - **45.2 — Proteção contra Recriações no Watchdog:** UART driver e task de recepção `simcom_rx` não são mais recriados nas desconexões do watchdog, evitando crashes e deadlocks.
+  - **45.3 — Sonda DSSS Acelerada:** Adicionada flag `first_init_done` para pular a varredura física de slots e ir direto para o chip ativo durante reinicializações.
+  - **45.4 — Métricas de Rede em Cache:** `simcom_driver_get_status` e orchestrator utilizam dados em cache. Comandos AT pesados (`AT+COPS?` e `AT+CEER`) rodam de forma lenta a cada 5 minutos no watchdog task em background.
+   - **45.5 — GPS Hot Start via AP_Flash:** GNSS configurado com `AT+CGNSSPWR=1,1` no power on e `AT+CGNSSPWR=0,1` no power off para salvar efemérides em Flash.
+
+---
+
+### **⚠ Fase 46: Investigação — YRM100 não está lendo tags**
+
+- **Objetivo:** Diagnosticar por que o leitor UHF YRM100 não está lendo tags, mesmo com `YRM100_SetTXPower(26)` implementado.
+- **Status:** 🔴 **PENDENTE — Necessita investigação em campo.**
+- **Hipóteses:**
+  - Necessidade de power cycle físico do módulo (pode estar em estado inconsistente)
+  - Parsing do frame de resposta pode estar incorreto (cálculo do EPC offset)
+  - Hardware: fiação, antena ou módulo danificado
+  - Baud rate incompatível entre STM32 e YRM100
+- **Ações necessárias:**
+  - Verificar com osciloscópio/lógica analyzer se o YRM100 está respondendo ao comando `0xBB 0x00 0x22 0x00 0x00 0x22 0x7E`
+  - Testar com um power cycle manual (desligar e ligar alimentação do YRM100)
+  - Verificar parsing do frame de resposta (especialmente EPC offset e checksum)
+

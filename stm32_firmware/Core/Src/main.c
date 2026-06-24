@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include "alerts.h"
 #include "power_mgmt.h"
+#include "rfid_parser.h"
 
 /* USER CODE END Includes */
 
@@ -133,34 +134,24 @@ int main(void)
   HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
   HAL_UART_Receive_IT(&huart2, &cmd_byte, 1);
 
+  YRM100_SetTXPower(26);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   while (1)
   {
-    if (!Power_IsSleeping()) {
-        RFID_Process_YRM100();
-        RFID_Process_WL134();
+    RFID_Process_YRM100();
+    RFID_Process_WL134();
 
-        Buzzer_Update();
+    Buzzer_Update();
 
-        Command_Process();
-
-        Power_Update();
-    } else {
-        HAL_PWR_EnterSTOPMode(PWR_LOWPOWERMODE_STOP1, PWR_STOPENTRY_WFI);
-        SystemClock_Config();
-        Power_Init();
-
-        HAL_UART_Receive_IT(&huart3, &byte_wl134, 1);
-        HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
-        HAL_UART_Receive_IT(&huart2, &cmd_byte, 1);
-    }
+    Command_Process();
 
     uint32_t now = HAL_GetTick();
     uint32_t hb_interval = (last_heartbeat == 0) ? HEARTBEAT_FIRST_MS : HEARTBEAT_INTERVAL_MS;
 
-    if (now - last_yrm100_poll > 200) {
+    if (now - last_yrm100_poll > 100 && (!RFID_HasData(1) || (now - last_yrm100_poll > 250))) {
         uint8_t cmd_inv[] = {0xBB, 0x00, 0x22, 0x00, 0x00, 0x22, 0x7E};
         HAL_UART_Transmit(&huart4, cmd_inv, sizeof(cmd_inv), 50);
         last_yrm100_poll = now;
@@ -185,7 +176,6 @@ int main(void)
         last_heartbeat = now;
         char hb[] = "{\"type\":\"heartbeat\"}\n";
         HAL_UART_Transmit(&huart2, (uint8_t*)hb, strlen(hb), 100);
-        Power_ActivityDetected();
     }
     /* USER CODE END WHILE */
 
@@ -526,8 +516,6 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    Power_ActivityDetected();
-
     if (huart->Instance == USART4) {
         RFID_StoreByte(byte_yrm100, 1);
         HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
@@ -554,9 +542,6 @@ void Command_Process(void) {
 
     if (current_buzzer != last_buzzer_state) {
         last_buzzer_state = current_buzzer;
-        if (current_buzzer) {
-            Power_ActivityDetected();
-        }
     }
 
     if (Alerts_IsBatteryCritical()) {

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define RFID_BUFFER_SIZE 128
+#define RFID_BUFFER_SIZE 512
 
 typedef struct {
     uint8_t raw_data[RFID_BUFFER_SIZE];
@@ -17,5 +17,6 @@ uint8_t RFID_HasData(uint8_t is_yrm100);
 
 void RFID_Process_YRM100(void);
 void RFID_Process_WL134(void);
+void YRM100_SetTXPower(uint8_t dbm);
 
 #endif

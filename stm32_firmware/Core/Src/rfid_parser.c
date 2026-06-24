@@ -174,6 +174,26 @@ void RFID_Process_WL134(void)
     }
 }
 
+void YRM100_SetTXPower(uint8_t dbm)
+{
+    if (dbm > 33) dbm = 33;
+    uint16_t centidbm = (uint16_t)dbm * 100;
+    uint8_t cmd[9];
+    cmd[0] = 0xBB;
+    cmd[1] = 0x00;
+    cmd[2] = 0xB6;
+    cmd[3] = 0x00;
+    cmd[4] = 0x02;
+    cmd[5] = (uint8_t)(centidbm >> 8);
+    cmd[6] = (uint8_t)(centidbm & 0xFF);
+    uint8_t cksum = 0;
+    for (int i = 1; i <= 6; i++) cksum += cmd[i];
+    cmd[7] = cksum;
+    cmd[8] = 0x7E;
+    extern UART_HandleTypeDef huart4;
+    HAL_UART_Transmit(&huart4, cmd, sizeof(cmd), 50);
+}
+
 uint16_t RFID_GetOverflowCount(uint8_t is_yrm100)
 {
     return is_yrm100 ? yrm100_overflow_count : wl134_overflow_count;

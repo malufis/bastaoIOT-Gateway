@@ -540,6 +540,135 @@ K10 (gui_task, a cada 500ms):
 
 ---
 
+## Sessão 27 — Remoção Completa de Sleep (STM32 + ESP32)
+**Data:** 2026-06-24
+**Objetivo:** Eliminar todos os modos de baixo consumo (sleep/stop) do STM32 e ESP32 para garantir operação contínua.
+
+**Problemas Resolvidos:**
+- STM32 entrava em STOP1 mode após 120s de inatividade, desligando leitores RFID e pausando processamento
+- ESP32 light sleep causava travamento nas comunicações UART (RFID/SIMCom) — já havia sido desabilitado mas código permanecia
+- Watchdog do ESP32 enviava `\n` periódico para acordar STM32, adicionando complexidade desnecessária
+- Módulo `power_mgmt.c/h` com 159 linhas de código de sleep que nunca deveria ser usado
+
+**Modificações:**
+
+**STM32:**
+- `Core/Inc/power_mgmt.h`: Reduzido de 31 para 12 linhas — só resta `Power_Init()` sem sleeps
+- `Core/Src/power_mgmt.c`: Reduzido de 159 para 11 linhas — só liga GPIO dos RFID readers
+- `Core/Inc/main.h`: Removeu declarações de `Power_Update/Sleep/Wake/IsSleeping/ActivityDetected`
+- `Core/Src/main.c`: Removeu `if (!Power_IsSleeping())`, `Power_Update()`, e 3 chamadas de `Power_ActivityDetected()`
+
+**ESP32:**
+- `esp_power.h`: Reduzido de 32 para 12 linhas — só resta `esp_power_init()`
+- `esp_power.c`: Reduzido de 136 para 13 linhas — init vazio (só log)
+- `stm32_uart.c`: Removeu variável `stm32_sleeping`, parsing de `"type":"power"`, função `stm32_uart_is_stm32_sleeping()`
+- `stm32_uart.h`: Removeu `stm32_uart_is_stm32_sleeping()`, `DATA_TYPE_POWER` mantido como reservado
+- `main.c`: Removeu `#include "esp_power.h"`, `esp_power_init()`, `esp_power_update()` (2x), `esp_power_trigger_wake()`, e bloco de STM32 dormindo com wake `\n` a cada 30s
+
+---
+
+## Sessão 28 — Potência TX do YRM100 e Ajuste de Bateria
+**Data:** 2026-06-24
+**Objetivo:** Configurar potência RF do leitor YRM100 conforme configuração do sistema e corrigir mapeamento de bateria.
+
+**Problemas Resolvidos:**
+- YRM100 operava sempre na potência default do módulo (26dBm), ignorando configuração do app
+- Comando `0xB6` (Set TX Power) nunca era enviado ao YRM100 — faltava implementação no STM32
+- Comando `stm32_cmd_send_yrm_power()` só controlava GPIO (liga/desliga) sem ajustar RF
+- Mapeamento de bateria estava incorreto: 100% em 8.89V e 0% em 8.80V (range de apenas 0.09V)
+- Bateria em 8.85V (carga normal) marcava apenas ~55%
+
+**Modificações:**
+
+**STM32:**
+- `Core/Inc/rfid_parser.h`: Adicionado `YRM100_SetTXPower(uint8_t dbm)`
+- `Core/Src/rfid_parser.c`: Implementada `YRM100_SetTXPower()` — monta frame `0xB6` com potência em centésimos de dBm
+- `Core/Src/alerts.c`: Parsing do comando `{"cmd":"yrm_tx_power","value":<dbm>}` recebido do ESP32
+
+**ESP32:**
+- `stm32_cmd.h/c`: Nova função `stm32_cmd_send_yrm_tx_power(uint8_t dbm)` — envia JSON com dBm
+- `ble_mobile.c`: Default `.yrm100_power` alterado de 20 para 26 dBm
+- `main.c`: No boot, após reset do STM32, envia comando com `bastao_current_config.yrm100_power`
+- `main.c`: Ajustado mapeamento de bateria para 100%=8.80V e 0%=7.50V (2 ocorrências)
+
+---
+
+## Sessão 29 — Remoção de Acentos da Tela K10
+**Data:** 2026-06-24
+**Objetivo:** Remover caracteres acentuados dos textos exibidos no display da K10.
+
+**Modificações:**
+- `k10_firmware/components/gui/gui_manager.c`: `"GPS NÃO SINCRONIZADO"` → `"GPS NAO SINCRONIZADO"` (2 ocorrências)
+
+---
+
+## Sessão 30 — Correção do Makefile STM32 e Compilação
+**Data:** 2026-06-24
+**Objetivo:** Corrigir o path do linker script no makefile de Release para permitir compilação via linha de comando.
+
+**Problemas Resolvidos:**
+- Makefile do Release usava `Bastão-ESP` (com acento) no caminho absoluto do linker script, mas a pasta real era `Bastao-ESP` (sem acento)
+- Arquivos `rfid_parser.c`, `battery_monitor.c` e `circular_buffer.c` não estavam no `objects.list` gerado pelo STM32CubeMX
+
+**Modificações:**
+- `stm32_firmware/Release/makefile`: Corrigido path do linker script de `Bastão-ESP` para `Bastao-ESP`
+- `stm32_firmware/Release/objects.list`: Adicionados `rfid_parser.o`, `battery_monitor.o`, `circular_buffer.o`
+
+---
+
+## Sessão 31 — Otimização de Velocidade: K10 + STM32
+**Data:** 2026-06-24
+**Objetivo:** Reduzir latência entre leitura RFID e exibição na tela K10, e aumentar taxa de leitura do YRM100.
+
+**Problemas Resolvidos:**
+
+**K10 lenta para exibir tags:**
+- `dispatcher_task` no ESP32 tinha `vTaskDelay(300ms)` após cada envio Mesh, esperando resposta de sensores da K10 — bloqueava processamento de tags subsequentes
+- GUI da K10 fazia polling de dados Mesh a cada 500ms — tag podia demorar até 500ms para aparecer na tela
+
+**STM32 com baixa taxa de leitura:**
+- YRM100 fazia inventário a cada 200ms no mínimo (5 leituras/s)
+- Com buffer cheio, esperava 500ms antes de novo poll
+
+**Modificações:**
+
+**ESP32:**
+- `main.c`: Removido `vTaskDelay(300ms)` após `mesh_coordinator_send_data()` — K10 responde assincronamente e dados de sensores chegam via Mesh no ritmo dela
+
+**K10:**
+- `main.c`: Polling de dados Mesh reduzido de 500ms para 200ms (`sensor_timer >= 50` → `>= 20`)
+
+**STM32:**
+- `Core/Src/main.c`: Poll mínimo do YRM100 reduzido de 200ms para 100ms; poll com buffer ocupado reduzido de 500ms para 250ms
+
+---
+
+## Sessão 32 — Correção Criptografia Mesh + YRM100 SetTXPower Perdidos no Git HEAD
+**Data:** 2026-06-24
+**Objetivo:** Resolver K10 sem dados (payload criptografado) e YRM100 sem leitura (TX power não configurado) após git HEAD reset.
+
+### Problemas Resolvidos
+- **K10 não exibia dados:** `dispatcher_task` no ESP32 criptografava o JSON com `secure_payload_encrypt()` antes de enviar via BLE Mesh. O K10 recebia hex (`a1b2c3...`) e `strstr()` nunca encontrava `"type":"rfid"`. Perdido no reset do git HEAD (Sessão 15).
+- **YRM100 não lia tags:** Função `YRM100_SetTXPower()` e handler do comando `yrm_tx_power` no STM32 foram perdidos no reset (Sessão 28). Modulo operava sem configuração explícita de potência RF.
+- **Status periódico perdido:** GPS, Cell e Gateway status não eram mais enviados à K10 (Sessões 16 e 21).
+- **Bateria sem percentual:** Mensagem `batt` não incluía `pct` que o K10 espera.
+
+### Modificações
+
+**ESP32 (`esp32_firmware/main/main.c`):**
+- `dispatcher_task`: Remove `secure_payload_encrypt()` do path Mesh — envia `json_buf` direto para `mesh_coordinator_send_data()`
+- `dispatcher_task`: Adiciona cálculo de `pct` (7.50V=0%, 8.80V=100%) na mensagem `{"type":"batt",...}`
+- `system_orchestrator_task`: Envia GPS + Gateway status à K10 a cada 30s
+- `system_orchestrator_task`: Envia Cell status (RSSI, operadora) à K10 a cada 60s
+
+**STM32 (`stm32_firmware`):**
+- `Core/Inc/rfid_parser.h`: `RFID_BUFFER_SIZE` 128 → 512, adicionado protótipo `YRM100_SetTXPower()`
+- `Core/Src/rfid_parser.c`: Implementa `YRM100_SetTXPower()` — comando `0xB6` com potência em centésimos de dBm
+- `Core/Src/main.c`: Chama `YRM100_SetTXPower(26)` no boot, após power-on do módulo
+- `Core/Src/alerts.c`: Handler `{"cmd":"yrm_tx_power","value":<dbm>}`, include `rfid_parser.h`
+
+---
+
 # Guia de Referência: Agents e Skills do Projeto Bastao-ESP
 
 ## Agents Disponíveis
@@ -651,7 +780,12 @@ idf.py -C D:\git\Bastao\Bastao-ESP\esp32_firmware build
 # Build K10
 idf.py -C D:\git\Bastao\Bastao-ESP\k10_firmware build
 
-# Flash + Monitor
+# Build STM32 (Release)
+$env:Path = "C:\ST\STM32CubeCLT_1.16.0\GNU-tools-for-STM32\bin;$env:Path"
+cd D:\git\Bastao\Bastao-ESP\stm32_firmware\Release
+& "C:\ST\STM32CubeIDE_1.16.0\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.externaltools.make.win32_2.1.300.202402091052\tools\bin\make.exe" main-build
+
+# Flash + Monitor (ESP32)
 idf.py -p COM7 flash monitor
 
 # Limpar build

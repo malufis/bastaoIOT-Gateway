@@ -7,6 +7,7 @@
  */
 #include "main.h"
 #include "alerts.h"
+#include "rfid_parser.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -101,6 +102,18 @@ void Alerts_ProcessCommand(const char* json) {
         } else {
             HAL_GPIO_WritePin(WL134_PWR_PORT, WL134_PWR_PIN, GPIO_PIN_RESET);
         }
+    }
+
+    if (strstr(json, "\"cmd\"") != NULL && strstr(json, "\"yrm_tx_power\"") != NULL) {
+        int dbm = 26;
+        char *v = strstr(json, "\"value\":");
+        if (v) {
+            v += 8;
+            dbm = atoi(v);
+        }
+        if (dbm < 1) dbm = 1;
+        if (dbm > 33) dbm = 33;
+        YRM100_SetTXPower((uint8_t)dbm);
     }
 }
 

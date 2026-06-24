@@ -4,8 +4,8 @@
  * (Coordenador Mesh).
  * @details Este arquivo e responsavel por inicializar a infraestrutura do
  * sistema, como NVS Flash, modulo criptografico, pilha BLE Mesh, modem celular
- * SIMCom 7663E (PPP), cliente MQTT, e a tarefa central de roteamento/despacho
- * de mensagens criptografadas para a rede local e para a nuvem.
+ * SIMCom 7663E (AT commands), cliente MQTT, e a tarefa central de
+ * roteamento/despacho de mensagens criptografadas para a rede local e nuvem.
  *
  * @author Antigravity Agent
  * @date 2026-05-20
@@ -20,27 +20,31 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #include "ble_mobile.h"
 #include "mesh_coordinator.h"
 #include "mqtt_publisher.h"
 #include "secure_payload.h"
-#include "simcom_ppp.h"
+#include "simcom_driver.h"
 #include "stm32_uart.h"
 #include "stm32_cmd.h"
 #include "offline_cache.h"
 #include "ota_manager.h"
 #include "wifi_driver.h"
 #include "animal_db.h"
-#include "esp_power.h"
 #include "cmd_parser.h"
 #include "esp32_logger.h"
 #include "private_configs.h"
+#include "rfid_dedup.h"
 
 static const char *TAG = "MAIN";
 
 static simcom_gps_data_t gps_data;
+
+/* Forward declaration - definida apos app_main */
+static void system_orchestrator_task(void *pvParameters);
 
 /**
  * @brief Chave simetrica estatica padrao para criptografia AES-256 (32 bytes).
@@ -68,8 +72,6 @@ static void dispatcher_task(void *pvParameters) {
   ESP_LOGI(TAG, "Task despachante iniciada com sucesso.");
 
   while (1) {
-    esp_power_update();
-
     if (xQueueReceive(stm32_data_queue, &raw_msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
       memset(json_buf, 0, sizeof(json_buf));
       memset(json_mqtt, 0, sizeof(json_mqtt));
@@ -109,7 +111,7 @@ static void dispatcher_task(void *pvParameters) {
         time_t now = time(NULL);
         struct tm *tm_info = localtime(&now);
         char timestamp_str[32];
-        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%dT%H:%M:%S-03:00", tm_info);
+        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%dT%H:%M:%S-04:00", tm_info);
 
         // Monta JSON para MQTT no formato esperado pelo sistemaBastao
         double lat = bastao_current_status.gps_fix ? bastao_current_status.gps_latitude : 0.0;
@@ -121,19 +123,24 @@ static void dispatcher_task(void *pvParameters) {
                  raw_msg.tag, lat, lon, batt, timestamp_str);
 
         ble_mobile_notify_tag(json_buf);
-        esp_power_trigger_wake();
         bastao_current_status.tags_read_count++;
 
         if (raw_msg.movement || raw_msg.type == DATA_TYPE_RFID) {
           stm32_cmd_send_buzzer(STM32_CMD_BUZZER_SHORT);
         }
       } else if (raw_msg.type == DATA_TYPE_BATTERY) {
+        float pct = 0;
+        if (raw_msg.battery_v >= 8.80f) pct = 100;
+        else if (raw_msg.battery_v <= 7.50f) pct = 0;
+        else pct = (raw_msg.battery_v - 7.50f) / (8.80f - 7.50f) * 100.0f;
+
         snprintf(json_buf, sizeof(json_buf),
-                 "{\"type\":\"batt\",\"volt\":%.2f}", raw_msg.battery_v);
+                 "{\"type\":\"batt\",\"volt\":%.2f,\"pct\":%d}",
+                 raw_msg.battery_v, (int)pct);
 
         bastao_current_status.battery_voltage = raw_msg.battery_v;
 
-        if (raw_msg.battery_v < 9.0f) {
+        if (raw_msg.battery_v < 7.7f) {
           stm32_cmd_send_buzzer(STM32_CMD_BUZZER_LONG);
         }
       } else if (raw_msg.type == DATA_TYPE_ACCEL) {
@@ -149,14 +156,12 @@ static void dispatcher_task(void *pvParameters) {
 
       ESP_LOGD(TAG, "JSON Mesh: %s", json_buf);
 
-      // 2. Criptografa payload para BLE Mesh e envia para K10
-      esp_err_t err = secure_payload_encrypt(json_buf, encrypted_hex, sizeof(encrypted_hex));
-      if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Payload Mesh criptografado: %s", encrypted_hex);
-        err = mesh_coordinator_send_data(encrypted_hex);
-        if (err != ESP_OK) {
-          ESP_LOGE(TAG, "Falha ao encaminhar dados via BLE Mesh.");
-        }
+      // 2. Envia JSON simples (sem criptografia) via BLE Mesh para K10
+      //    A seguranca e garantida pela criptografia de link layer do BLE Mesh
+      //    (AppKey + NetKey). O K10 nao tem capacidade de descriptografia AES-256.
+      esp_err_t err = mesh_coordinator_send_data(json_buf);
+      if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao encaminhar dados via BLE Mesh.");
       }
 
       // 3. Se for leitura RFID, envia tambem para MQTT (sistemaBastao)
@@ -190,9 +195,9 @@ static void manage_connectivity(void) {
 
     switch (mode) {
         case NETWORK_MODE_WIFI_ONLY: {
-            if (!simcom_ppp_is_suspended()) {
+            if (!simcom_driver_is_suspended()) {
                 ESP_LOGI(TAG, "[Orquestrador] Modo WIFI_ONLY: Suspendendo celular.");
-                simcom_ppp_set_suspended(true);
+                simcom_driver_set_suspended(true);
             }
             if (!wifi_connected) {
                 if (wifi_reconnect_timer >= 15) {
@@ -209,9 +214,9 @@ static void manage_connectivity(void) {
         }
 
         case NETWORK_MODE_CELLULAR_ONLY: {
-            if (simcom_ppp_is_suspended()) {
+            if (simcom_driver_is_suspended()) {
                 ESP_LOGI(TAG, "[Orquestrador] Modo CELLULAR_ONLY: Reativando celular.");
-                simcom_ppp_set_suspended(false);
+                simcom_driver_set_suspended(false);
             }
             if (wifi_connected) {
                 ESP_LOGI(TAG, "[Orquestrador] Modo CELLULAR_ONLY: Desconectando Wi-Fi.");
@@ -224,15 +229,15 @@ static void manage_connectivity(void) {
         case NETWORK_MODE_WIFI_CELLULAR:
         case NETWORK_MODE_AUTO: {
             if (wifi_connected) {
-                if (!simcom_ppp_is_suspended()) {
+                if (!simcom_driver_is_suspended()) {
                     ESP_LOGI(TAG, "[Orquestrador] Wi-Fi conectado. Suspendendo celular para economizar dados/energia.");
-                    simcom_ppp_set_suspended(true);
+                    simcom_driver_set_suspended(true);
                 }
                 wifi_reconnect_timer = 0;
             } else {
-                if (simcom_ppp_is_suspended()) {
+                if (simcom_driver_is_suspended()) {
                     ESP_LOGI(TAG, "[Orquestrador] Wi-Fi desconectado. Reativando celular...");
-                    simcom_ppp_set_suspended(false);
+                    simcom_driver_set_suspended(false);
                 }
                 if (wifi_reconnect_timer >= 60) {
                     wifi_reconnect_timer = 0;
@@ -250,13 +255,12 @@ static void manage_connectivity(void) {
 void app_main(void) {
   ESP_LOGI(TAG, "Inicializando o Bastao-ESP Mesh Coordinator...");
 
-  // Configura nivel de debug para rede e conexao PPP
-  esp_log_level_set("SIMCOM_PPP", ESP_LOG_DEBUG);
-  esp_log_level_set("esp-netif_lwip-ppp", ESP_LOG_DEBUG);
+  // Configura nivel de debug para rede e conexao celular
+  esp_log_level_set("SIMCOM_DRV", ESP_LOG_DEBUG);
 
   // ----------------------------------------------------------------
   // PASSO 0: Inicializa a pilha TCP/IP e o Event Loop do sistema.
-  // DEVE ser chamado ANTES de qualquer modulo de rede (Wi-Fi, PPP).
+  // DEVE ser chamado ANTES de qualquer modulo de rede (Wi-Fi, celular).
   // ----------------------------------------------------------------
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -271,7 +275,6 @@ void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   animal_db_init();
-  esp_power_init();
 
   if (offline_cache_init() == ESP_OK) {
     offline_cache_sync_task_start(3);
@@ -283,14 +286,18 @@ void app_main(void) {
 
   ble_mobile_load_network_config();
 
-  if (wifi_driver_init() == ESP_OK) {
-    if (bastao_network_config.wifi.enabled &&
-        strlen(bastao_network_config.wifi.ssid) > 0) {
-      wifi_driver_connect(bastao_network_config.wifi.ssid,
-                        bastao_network_config.wifi.password);
+  if (bastao_network_config.mode != NETWORK_MODE_CELLULAR_ONLY) {
+    if (wifi_driver_init() == ESP_OK) {
+      if (bastao_network_config.wifi.enabled &&
+          strlen(bastao_network_config.wifi.ssid) > 0) {
+        wifi_driver_connect(bastao_network_config.wifi.ssid,
+                          bastao_network_config.wifi.password);
+      }
+    } else {
+      ESP_LOGE(TAG, "Falha ao inicializar o driver Wi-Fi.");
     }
   } else {
-    ESP_LOGE(TAG, "Falha ao inicializar o driver Wi-Fi.");
+    ESP_LOGI(TAG, "Modo CELLULAR_ONLY: Wi-Fi nao inicializado.");
   }
 
   // 1f. Inicializa o logger wireless para debug remoto
@@ -302,7 +309,7 @@ void app_main(void) {
 
   // 2. Instancia a fila global compartilhada para trafego de dados recebidos do
   // STM32
-  stm32_data_queue = xQueueCreate(20, sizeof(stm32_data_t));
+  stm32_data_queue = xQueueCreate(50, sizeof(stm32_data_t));
   if (stm32_data_queue == NULL) {
     ESP_LOGE(TAG,
              "Falha critica ao criar a fila stm32_data_queue. Abortando...");
@@ -338,11 +345,24 @@ void app_main(void) {
     if (stm32_uart_rx_task_start(5) != pdPASS) {
       ESP_LOGE(TAG, "Falha ao iniciar a task stm32_uart_rx.");
     }
+
+    // 6b. Aguarda boot do STM32 e aplica reset para sincronizar
+    vTaskDelay(pdMS_TO_TICKS(500));
+    stm32_uart_reset_stm32();
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    // Configura potencia RF do YRM100 conforme configuracao salva
+    ESP_LOGI(TAG, "Configurando potencia TX do YRM100 para %d dBm...",
+             bastao_current_config.yrm100_power);
+    stm32_cmd_send_yrm_tx_power(bastao_current_config.yrm100_power);
   }
+
+  // 6c. Inicializa o modulo de deduplicacao RFID
+  rfid_dedup_init();
 
   // 7. Dispara a tarefa despachante com prioridade 6 (superior a task serial
   // para escoamento rapido)
-  if (xTaskCreate(dispatcher_task, "dispatcher_task", 6144, NULL, 6, NULL) !=
+  if (xTaskCreatePinnedToCore(dispatcher_task, "dispatcher_task", 6144, NULL, 6, NULL, 0) !=
       pdPASS) {
     ESP_LOGE(TAG, "Falha ao iniciar a task dispatcher_task.");
   }
@@ -364,28 +384,53 @@ void app_main(void) {
   }
   ESP_LOGI(TAG, "MQTT username (serial): %s", active_mqtt_config.username);
 
+  // Substitui placeholder 000000000000 pelo MAC real nos topicos MQTT
+  char mac_str[13];
+  snprintf(mac_str, sizeof(mac_str), "%02X%02X%02X%02X%02X%02X",
+           _mac[0], _mac[1], _mac[2], _mac[3], _mac[4], _mac[5]);
+  char *p = strstr(active_mqtt_config.topic_telemetry, "000000000000");
+  if (p) memcpy(p, mac_str, 12);
+  p = strstr(active_mqtt_config.topic_gps, "000000000000");
+  if (p) memcpy(p, mac_str, 12);
+  p = strstr(bastao_network_config.mqtt.topic_telemetry, "000000000000");
+  if (p) memcpy(p, mac_str, 12);
+  p = strstr(bastao_network_config.mqtt.topic_gps, "000000000000");
+  if (p) memcpy(p, mac_str, 12);
+  ESP_LOGI(TAG, "Topicos MQTT ajustados para MAC %s", mac_str);
+
+  // Inicializa o publicador MQTT sempre (fila/task rodando)
   if (mqtt_publisher_init(&active_mqtt_config) == ESP_OK) {
     if (mqtt_publisher_task_start(4) != pdPASS) {
       ESP_LOGE(TAG, "Falha ao iniciar task de publicacao MQTT.");
     }
   } else {
-    ESP_LOGE(TAG, "Falha ao inicializar cliente MQTT.");
+    ESP_LOGE(TAG, "Falha ao inicializar publicador MQTT.");
   }
 
-  // 8. Inicializa o modem celular SIMCom 7663E e a interface PPP
+  // 8. Inicializa o modem celular SIMCom 7663E
   ESP_LOGI(TAG, "Inicializando modulo celular SIMCom 7663E...");
-  if (simcom_ppp_init() == ESP_OK) {
+
+  // Carrega dados SIM salvos de boot anterior (para exibir enquanto o probe roda)
+  ble_mobile_load_sim_data();
+
+  if (simcom_driver_init() == ESP_OK) {
     simcom_apn_config_t active_apn = {0};
     strncpy(active_apn.apn, bastao_network_config.cellular.apn, sizeof(active_apn.apn) - 1);
     strncpy(active_apn.user, bastao_network_config.cellular.user, sizeof(active_apn.user) - 1);
     strncpy(active_apn.password, bastao_network_config.cellular.password, sizeof(active_apn.password) - 1);
 
-    if (simcom_ppp_configure_apn(&active_apn) == ESP_OK) {
+    // Persiste dados SIM na NVS (IMEI, MSISDN, ICCID, operadora)
+    ble_mobile_save_sim_data();
+
+    if (simcom_driver_configure_apn(&active_apn) == ESP_OK) {
+      // Atualiza dados SIM com operadora e sinal recem-coletados
+      ble_mobile_save_sim_data();
+
       if (!wifi_driver_is_connected()) {
-        if (simcom_ppp_connect() == ESP_OK) {
-          ESP_LOGI(TAG, "Conectividade celular PPP ativa.");
+        if (simcom_driver_mqtt_connect(&active_mqtt_config) == ESP_OK) {
+          ESP_LOGI(TAG, "Conectividade celular MQTT ativa.");
         } else {
-          ESP_LOGE(TAG, "Falha inicial ao estabelecer sessao PPP (sera tentado pelo Watchdog).");
+          ESP_LOGE(TAG, "Falha inicial ao estabelecer sessao MQTT (sera tentado pelo Watchdog).");
         }
       } else {
         ESP_LOGI(TAG, "Wi-Fi ativo. Pulando conexao celular inicial.");
@@ -398,42 +443,117 @@ void app_main(void) {
   }
 
   // 10. Inicia o watchdog de reconexao automatica do modem (prioridade 3)
-  simcom_ppp_watchdog_start(3);
+  simcom_driver_watchdog_start(3);
 
-  // Loop principal da task de orquestracao do sistema
-  // Atualiza periodicamente o status do dispositivo para leituras BLE
+  // 11. Dispara a tarefa de orquestracao do sistema com stack de 8KB
+  if (xTaskCreatePinnedToCore(system_orchestrator_task, "system_orchestrator", 8192, NULL, 5, NULL, 0) != pdPASS) {
+    ESP_LOGE(TAG, "Falha ao criar a tarefa de orquestracao do sistema!");
+  }
+
+  ESP_LOGI(TAG, "Inicializacao de app_main concluida. Deletando task main.");
+}
+
+/**
+ * @brief Task de orquestracao do sistema (connectivity, GPS, status, heartbeat).
+ */
+static void system_orchestrator_task(void *pvParameters) {
+  // Configura timezone GMT-4 para America/Manaus
+  setenv("TZ", "AMT+4", 1);
+  tzset();
+  ESP_LOGI(TAG, "Timezone configurado: GMT-4 (AMT+4)");
+  ESP_LOGI(TAG, "Tarefa de orquestracao do sistema iniciada.");
   uint32_t gps_tick = 0;
+  uint8_t stm32_dead_count = 0;
+
   while (1) {
     manage_connectivity();
 
-    bastao_current_status.ppp_connected = simcom_ppp_is_connected();
+    bastao_current_status.cellular_connected = simcom_driver_is_connected();
     bastao_current_status.mqtt_connected = mqtt_publisher_is_connected();
     ble_mobile_update_status(&bastao_current_status);
 
     if (!stm32_uart_is_stm32_alive()) {
         bastao_current_status.stm32_alive = 0;
-        ESP_LOGW(TAG, "STM32 sem resposta. Verificar conexao UART.");
+        if (stm32_uart_has_ever_been_alive()) {
+            stm32_dead_count++;
+            if (stm32_dead_count >= 120) {
+                ESP_LOGE(TAG, "STM32 sem heartbeat por >120s. Aplicando reset via GPIO...");
+                stm32_uart_reset_stm32();
+                stm32_dead_count = 0;
+            }
+        }
     } else {
         bastao_current_status.stm32_alive = 1;
+        stm32_dead_count = 0;
     }
 
-    // Leitura periodica do GPS (a cada 30s, quando o modem esta em modo AT)
-    // TODO: Para uso com PPP ativo, e necessario suspender PPP temporariamente
+    // Sincronizacao de horario via torre celular (AT+CCLK)
+    {
+        time_t now = time(NULL);
+        if (now < 1700000000 && simcom_driver_get_state() >= SIMCOM_STATE_REGISTERED) {
+            static uint32_t time_sync_tick = 0;
+            time_sync_tick++;
+            if (time_sync_tick >= 30) {
+                time_sync_tick = 0;
+                ESP_LOGI(TAG, "Hora nao sincronizada. Tentando via torre celular (AT+CCLK)...");
+                simcom_driver_sync_time_from_tower();
+            }
+        }
+    }
+
+    // Leitura periodica do GPS (a cada 30s)
     gps_tick++;
     if (gps_tick >= 30) {
       gps_tick = 0;
-      if (!simcom_ppp_is_connected() && !simcom_ppp_is_suspended()) {
-        if (simcom_ppp_get_gps(&gps_data) == ESP_OK && gps_data.valid) {
-          bastao_current_status.gps_latitude = gps_data.latitude;
-          bastao_current_status.gps_longitude = gps_data.longitude;
-          bastao_current_status.gps_fix = true;
-          ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
-                   gps_data.latitude, gps_data.longitude);
-        }
+      if (simcom_driver_get_gps(&gps_data) == ESP_OK && gps_data.valid) {
+        bastao_current_status.gps_latitude = gps_data.latitude;
+        bastao_current_status.gps_longitude = gps_data.longitude;
+        bastao_current_status.gps_fix = true;
+        ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
+                 gps_data.latitude, gps_data.longitude);
+      }
+
+      // Envia dados GPS para K10 via Mesh
+      {
+        char mesh_json[256];
+        snprintf(mesh_json, sizeof(mesh_json),
+                 "{\"type\":\"gps\",\"lat\":%.6f,\"lon\":%.6f,\"fix\":%d,\"alt\":%.1f,\"speed\":%.1f}",
+                 bastao_current_status.gps_latitude,
+                 bastao_current_status.gps_longitude,
+                 bastao_current_status.gps_fix ? 1 : 0,
+                 gps_data.valid ? gps_data.altitude : 0.0f,
+                 gps_data.valid ? gps_data.speed_kmh : 0.0f);
+        mesh_coordinator_send_data(mesh_json);
+      }
+
+      // Envia status do gateway para K10 via Mesh
+      {
+        char mesh_json[128];
+        snprintf(mesh_json, sizeof(mesh_json),
+                 "{\"type\":\"status\",\"rfid_conn\":%d,\"wifi_active\":%d}",
+                 bastao_current_status.stm32_alive ? 1 : 0,
+                 wifi_driver_is_connected() ? 1 : 0);
+        mesh_coordinator_send_data(mesh_json);
       }
     }
 
-    esp_power_update();
+    // Envia status da rede celular para K10 via Mesh (a cada 60s)
+    {
+      static uint32_t cell_tick = 0;
+      cell_tick++;
+      if (cell_tick >= 60) {
+        cell_tick = 0;
+        char mesh_json[192];
+        int rssi = 0, ber = 0;
+        simcom_driver_get_signal_quality(&rssi, &ber);
+        snprintf(mesh_json, sizeof(mesh_json),
+                 "{\"type\":\"cell\",\"rssi\":%d,\"connected\":%d,\"operator\":\"%s\"}",
+                 rssi,
+                 bastao_current_status.cellular_connected ? 1 : 0,
+                 bastao_current_status.sim_operator[0]);
+        mesh_coordinator_send_data(mesh_json);
+      }
+    }
 
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }

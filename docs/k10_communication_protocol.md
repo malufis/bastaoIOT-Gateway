@@ -1,299 +1,211 @@
-# Protocolo de Comunicação Bastão-ESP ↔ K10
+# Protocolo de Comunicação Bastão-ESP ↔ K10 (BLE Mesh)
 
-Este documento define o protocolo de comunicação entre o firmware do Bastão-ESP (ESP32 coordenador) e a Tela K10 (ESP32 nó Mesh).
-
----
-
-## 1. Visão Geral da Arquitetura
-
-```
-┌─────────────────┐         BLE Mesh          ┌─────────────────┐
-│   Bastão-ESP    │ ◄─────────────────────────► │      K10        │
-│  (Coordenador)  │    AES-CCM Criptografado   │   (Nó Mesh)     │
-│                 │                            │                 │
-│ - STM32 (RFID)  │  ┌─────────────────────┐   │ - LVGL UI       │
-│ - ESP32 (Mesh)  │  │  Payload Cripto    │   │ - Display       │
-│ - SIMCom 4G     │  │  JSON + AES-256    │   │ - Sensores      │
-│ - Wi-Fi         │  └─────────────────────┘   │ - Rede (Falta)  │
-└─────────────────┘                            └─────────────────┘
-```
+Este documento define o protocolo de comunicação entre o firmware do Bastão-ESP (ESP32 coordenador) e a Tela K10 (ESP32 nó Mesh) via BLE Mesh.
 
 ---
 
-## 2. Camada Física e Rede
+## 1. Arquitetura
 
-| Parâmetro | Valor |
-|-----------|-------|
-| Protocolo | ESP-BLE-MESH (IPv6 over BLE) |
-| Modo | Nó (K10) / Provisionador (Bastão) |
-| Segurança | AES-CCM com AppKey compartilhada |
-| Topologia | Star Mesh (1 coordinator + N nodes) |
+```
+┌─────────────────────────┐       BLE Mesh        ┌─────────────────────────┐
+│     Bastão-ESP          │ ◄─────────────────────► │         K10            │
+│   (Coordenador Mesh)    │   JSON plain text      │    (Nó Mesh Node)      │
+│                         │   CID=0x02A5 MID=0x0001│                        │
+│ - RFID (STM32)          │                        │ - LVGL UI (LCD 240x320)│
+│ - GPS (SIMCom)          │  ┌──────────────────┐  │ - Acelerômetro SC7A20  │
+│ - 4G status             │  │  JSON puro (sem   │  │ - Bateria LiPo         │
+│ - Bateria do sistema    │  │  criptografia)    │  │ - BLE Mesh Node        │
+└─────────────────────────┘  └──────────────────┘  └─────────────────────────┘
+```
+
+### 1.1. CID do Vendor Model
+
+**IMPORTANTE:** O CID do vendor model BLE Mesh é `0x02A5` (Espressif).
+
+NUNCA use `0xFFFF` — o stack ESP-IDF v5.4 usa `CID_NVAL = 0xFFFF` como flag interna
+para indicar modelo SIG. Com CID=0xFFFF, o bind do modelo falha silenciosamente
+e o K10 nunca recebe dados.
+
+### 1.2. Segurança
+
+BLE Mesh link layer já oferece criptografia via AppKey + NetKey.
+**Não é necessário AES-256-CBC adicional** entre coordenador e K10.
+A criptografia AES-256-CBC é usada exclusivamente para o path MQTT (nuvem).
 
 ---
 
-## 3. Formato do Payload
+## 2. Mensagens: Coordenador → K10
 
-### 3.1 Estrutura JSON (Antes da Criptografia)
+Todas as mensagens são enviadas como **JSON plain text** via opcode `0xC00001`.
+O K10 diferencia os tipos usando `strstr()` no campo `"type"`.
 
-```json
-{
-  "type": "rfid",
-  "model": "YRM100",
-  "tag": "30751FEB705C5904E3D50D70",
-  "timestamp": 1704067200,
-  "batt": 8.45
-}
-```
+### 2.1. RFID Tag
+
+**Trigger:** Cada leitura de tag RFID (STM32 → ESP32 → Mesh)
+**Frequência:** Por evento (cada tag única detectada)
 
 ```json
-{
-  "type": "rfid",
-  "model": "WL134",
-  "tag": "900250000023921",
-  "timestamp": 1704067200,
-  "name": "Vaca 001",
-  "weight": 450.5,
-  "lot": "Lote A"
-}
+{"type":"rfid","model":"YRM100","tag":"30751FEB705C5904E3D50D70","name":"Vaca 001","weight":450.5,"lot":"Lote A"}
 ```
-
-```json
-{
-  "type": "batt",
-  "volt": 8.45
-}
-```
-
-```json
-{
-  "type": "alert",
-  "code": "batt_critical",
-  "volt": 7.8
-}
-```
-
-### 3.2 Campos do Payload
 
 | Campo | Tipo | Descrição |
 |-------|------|-----------|
-| `type` | string | Tipo de mensagem: `rfid`, `batt`, `alert` |
-| `model` | string | Modelo do leitor: `YRM100`, `WL134` |
-| `tag` | string | ID da tag RFID (hex ou decimal) |
-| `timestamp` | uint32 | Timestamp Unix (segundos) |
-| `batt` / `volt` | float | Tensão da bateria em Volts |
-| `name` | string | Nome do animal (opcional, se enriched) |
-| `weight` | float | Peso do animal em kg (opcional) |
-| `lot` | string | Identificação do lote (opcional) |
-| `code` | string | Código do alerta: `batt_critical`, `batt_low`, `cache_full` |
+| `type` | string | `"rfid"` |
+| `model` | string | `"YRM100"` ou `"WL134"` |
+| `tag` | string | ID da tag RFID |
+| `name` | string | Nome do animal (se encontrado no banco local) |
+| `weight` | float | Peso em kg (se disponível) |
+| `lot` | string | Lote (se disponível) |
+| `x`/`y`/`z` | float | Acelerômetro (se leitura com accel) |
+| `movement` | int | 1 se movimento detectado |
 
-### 3.3 Criptografia
+### 2.2. Bateria do Sistema
 
-- **Algoritmo:** AES-256-CBC
-- **Padding:** PKCS#7
-- **Chave:** 32 bytes (compartilhada entre Bastão e K10)
-- **IV:** 16 bytes (gerado automaticamente)
-- **Saída:** String hexadecimal (texto cifrado em hex)
-
----
-
-## 4. Tópicos MQTT (sistemaBastao)
-
-A partir da Fase 28, os tópicos MQTT foram alterados para o formato:
-
-| Tópico | Dados | Descrição |
-|--------|-------|-----------|
-| `agro/bastao/{MAC}/telemetry` | Payload criptografado | Telemetria RFID + GPS + bateria |
-| `agro/bastao/{MAC}/gps` | Coordenadas GPS | Localização (reservado) |
-| `id/{MAC}/cmd` | Comandos JSON | Subscribe para comandos remotos |
-| `id/{MAC}/config` | Config JSON | Subscribe para configuração remota |
-
-Onde `{MAC}` é o endereço MAC do ESP32 (ex: `206EF1D4D574`).
-
-### 4.1 Payload MQTT vs Payload Mesh
-
-O Bastão-ESP envia **dois payloads distintos** para o mesmo evento RFID:
-
-| Destino | Formato JSON | Criptografia | Uso |
-|---------|-------------|--------------|-----|
-| **BLE Mesh (K10)** | `type`, `model`, `tag`, `name`, `weight`, `lot` | AES-256-CBC (IV aleatório) | Exibição local na tela |
-| **MQTT (sistemaBastao)** | `id_brinco`, `latitude`, `longitude`, `nivel_bateria`, `timestamp_rtc` | AES-256-CBC (IV aleatório) | Persistência e análise |
-
-A separação foi necessária porque o sistemaBastao espera campos específicos
-(`id_brinco`, `timestamp_rtc`) para o blockchain hash e a K10 precisa dos
-campos legados (`type`, `model`, `tag`) para a interface gráfica.
-
-### 4.2 JSON MQTT (sistemaBastao)
+**Trigger:** Por evento (STM32 envia a cada 5s)
 
 ```json
-{
-  "id_brinco": "30751FEB705C5904E3D50D70",
-  "latitude": -23.55052,
-  "longitude": -46.633308,
-  "nivel_bateria": 8.45,
-  "timestamp_rtc": "2026-06-11T12:00:00Z"
-}
+{"type":"batt","volt":8.45}
+```
+
+### 2.3. GPS
+
+**Trigger:** Periódico (a cada 30s)
+**Fonte:** Modem SIMCom (AT+CGPSINFO)
+
+```json
+{"type":"gps","lat":-20.444204,"lon":-54.619444,"fix":1,"alt":850.5,"speed":0.5}
+```
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `lat` | double | Latitude em graus decimais (6 casas) |
+| `lon` | double | Longitude em graus decimais (6 casas) |
+| `fix` | int | 1 = GPS fix válido, 0 = sem sinal |
+| `alt` | float | Altitude em metros |
+| `speed` | float | Velocidade em km/h |
+
+### 2.4. Status Celular
+
+**Trigger:** Periódico (a cada 60s)
+
+```json
+{"type":"cell","rssi":-75,"connected":1,"operator":"VIVO"}
+```
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `rssi` | int | RSSI em dBm (-113 a -51) |
+| `connected` | int | 1 = MQTT conectado, 0 = offline |
+| `operator` | string | Nome da operadora |
+
+---
+
+## 3. Mensagens: K10 → Coordenador
+
+### 3.1. Acelerômetro
+
+**Trigger:** A cada 500ms (se houver movimento)
+**Opcode:** `0xC00002`
+
+```json
+{"type":"accel","x":0.12,"y":0.05,"z":0.98,"movement":0}
+```
+
+### 3.2. Status do Display
+
+**Trigger:** A cada 30s
+**Opcode:** `0xC00003`
+
+```json
+{"type":"display","volt":3.70,"pct":85,"crit":0,"screen":1}
+```
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `volt` | float | Tensão da bateria da K10 |
+| `pct` | int | Percentual estimado (0-100) |
+| `crit` | int | 1 = bateria crítica |
+| `screen` | int | 1 = tela ativa |
+| `event` | string | Evento UI opcional |
+
+---
+
+## 4. Fluxo de Dados Completo
+
+```
+STM32 (leitura RFID)
+  │ UART JSON
+  v
+dispatcher_task (ESP32)
+  │
+  ├── JSON plain ──BLE Mesh──► K10 (RFID)
+  │                           ├── lbl_bovine_id = animal name
+  │                           └── lbl_time_label = model
+  │
+system_orchestrator_task (ESP32, a cada 30s)
+  │
+  ├── JSON plain ──BLE Mesh──► K10 (GPS)
+  │                           └── lbl_gps_coords = "-20.444204, -54.619444"
+  │
+  ├── JSON plain ──BLE Mesh──► K10 (Cell, a cada 60s)
+  │                           └── icon_4g = verde/vermelho
+  │
+  └── AES-256-CBC ──MQTT──► Nuvem (telemetria criptografada)
+
+K10 (a cada 500ms)
+  │
+  ├── JSON accel ──BLE Mesh──► Coordenador (movimento)
+  └── JSON display ──BLE Mesh──► Coordenador (status a cada 30s)
 ```
 
 ---
 
-## 5. Interface de Dados para UI (K10)
+## 5. Implementação
 
-A UI da K10 precisa das seguintes informações do Bastão:
+### 5.1. Coordenador (ESP32)
 
-### 5.1 Tag RFID Lida
-```
-Última Tag: 900250000023921
-Modelo: WL134 (LF)
-Animal: Vaca 001
-Peso: 450.5 kg
-Lote: Lote A
-```
+| Arquivo | Função |
+|---------|--------|
+| `mesh_coordinator.c` | Provisioner BLE Mesh, vendor model CID=0x02A5, envio de dados |
+| `mesh_coordinator.h` | API pública: `mesh_coordinator_init()`, `mesh_coordinator_send_data()` |
+| `main.c` (dispatcher_task) | Envia RFID/bateria para K10 |
+| `main.c` (system_orchestrator_task) | Envia GPS/cell para K10 |
 
-### 5.2 Status da Bateria
-```
-Bateria: 8.45V [████████░░] 77%
-Status: Normal
-```
+### 5.2. K10 (Display)
 
-### 5.3 Alertas
-```
-⚠ ALERTA: Bateria Crítica!
-Tensão: 7.8V
-```
+| Arquivo | Função |
+|---------|--------|
+| `k10_mesh_node.c` | Node BLE Mesh, parsing de JSON recebido |
+| `k10_mesh_node.h` | Structs: `k10_last_rfid_t`, `k10_battery_status_t`, `k10_gps_data_t`, `k10_cell_status_t` |
+| `gui_manager.c` | Atualização da UI LVGL |
+| `main.c` (K10) | `gui_task` (polling Mesh + sensores a cada 500ms), `network_task` (BLE Mesh no Core 0) |
 
 ---
 
-## 6. Protocolo de Mensagens ( mesh_coordinator → K10 )
+## 6. Provisionamento
 
-### 6.1 Tipos de Mensagens
+1. K10 inicia como **não provisionado** (anuncia como `dev_uuid` baseado no MAC)
+2. Coordenador detecta o anúncio e **provisiona** a K10
+3. Coordenador adiciona **AppKey** ao nó K10
+4. Coordenador faz **bind** do AppKey ao modelo vendor da K10
+5. Coordenador faz **bind** do AppKey ao modelo vendor local
+6. Comunicação estabelecida
 
-| Msg Type | Descrição | Prioridade |
-|----------|-----------|------------|
-| `0x01` | RFID Tag Lida | Alta |
-| `0x02` | Telemetria Bateria | Média |
-| `0x03` | Alerta | Alta |
-| `0x04` | GPS Location | Baixa |
-| `0x05` | Acknowledge | Baixa |
-
-### 6.2 Formato do Pacote Mesh
-
-```
-| Opcode (1B) | Length (1B) | Payload (N bytes) |
-| 0x01-0x05  |     N       |    JSON cifrado   |
-```
+**Persistência:** Com `CONFIG_BLE_MESH_SETTINGS=y`, o provisionamento persiste
+entre reboots na NVS da K10.
 
 ---
 
-## 7. Implementação no Bastão-ESP (ESP32)
+## 7. Troubleshooting
 
-### 7.1 Módulo: mesh_coordinator.c
-
-O módulo existente precisa ser expandido para:
-1. Completar a inicialização do BLE Mesh Provisioner
-2. Implementar o modelo de dados para envio
-3. Adicionar a lógica de descriptografia no receptor (K10)
-
-### 7.2 Código de Referência (Bastão-ESP)
-
-```c
-// Envio de dados para a K10 via Mesh
-esp_err_t mesh_coordinator_send_data(const char *hex_payload) {
-    // 1. Verificar se mesh está inicializado
-    // 2. Criar pacote com Opcode + Length + Payload
-    // 3. Criptografar com AES-CCM (AppKey)
-    // 4. Enviar para o endereço do nó K10
-}
-```
+| Sintoma | Causa | Solução |
+|---------|-------|---------|
+| K10 mostra "Model not bound" | CID=0xFFFF | Mudar para 0x02A5 |
+| K10 recebeu mas não exibe | Payload encriptado AES | Enviar JSON plain |
+| "No subnets to advertise" | K10 provisionada mas sem AppKey | Aguardar bind (pode levar 2-3s) |
+| GPS mostra "SEM SINAL" no boot | Primeira leitura GPS demora | Aguardar até 30s para sync |
 
 ---
 
-## 8. Implementação na K10 (Falta Implementar)
-
-### 8.1 Componente Necessário: k10_mesh_node
-
-```
-k10_firmware/components/k10_mesh/
-├── CMakeLists.txt
-├── k10_mesh_node.c        # Nó receptor Mesh
-├── k10_mesh_node.h        # API pública
-├── k10_mesh_parser.c      # Parser de payloads
-└── k10_mesh_parser.h      # Funções de parsing
-```
-
-### 8.2 Tarefas para K10
-
-1. **Inicializar BLE Mesh como Nó**
-   - Configurar o ESP32 como nó Mesh (não provisioner)
-   - Registrar AppKey para descriptografia
-   - Definir callback para recebimento de mensagens
-
-2. **Criar Task de Rede**
-   - Fixar no Core 0 (PRO_CPU)
-   - Receber mensagens Mesh
-   - Descriptografar payload
-   - Enviar para UI via queue
-
-3. **Integrar com GUI**
-   - Adicionar função `k10_mesh_update_tag()`
-   - Adicionar função `k10_mesh_update_battery()`
-   - Adicionar função `k10_mesh_update_alert()`
-
----
-
-## 9. Fluxo de Dados Completo
-
-```
-Bastão-ESP (STM32)                    Bastão-ESP (ESP32)              K10
-     │                                      │                           │
-     │  UART: {"type":"rfid",...}         │                           │
-     ├────────────────────────────────────► │                           │
-     │                                      │  Descriptografa           │
-     │                                      │  AES-256-CBC              │
-     │                                      │                           │
-     │                            ┌────────┴────────┐                   │
-     │                            │ Dispatcher     │                   │
-     │                            └────────┬────────┘                   │
-     │                                      │                           │
-     │                            mesh_coordinator_send_data()         │
-     │                                      │                           │
-     │                            BLE Mesh (AES-CCM)                   │
-     │                                      ├──────────────────────────►
-     │                                      │                           │
-     │                                      │         k10_mesh_node    │
-     │                                      │         Recebe payload   │
-     │                                      │         Descriptografa   │
-     │                                      │         Parse JSON       │
-     │                                      │                           │
-     │                                      │         GUI Queue         │
-     │                                      │                           │
-     │                                      │                           ▼
-     │                                      │                    LVGL Screen
-```
-
----
-
-## 10. Segurança
-
-### 10.1 AppKey Compartilhada
-- A mesma chave AES-256 deve ser armazenada em ambos os firmware
-- Recomendado: armazenar em NVS criptografado ou eFuse
-
-### 10.2 Provisionamento
-- O Bastão-ESP (Provisioner) deve provisionar a K10 com:
-  - UUID único da K10 na whitelist
-  - AppKey da rede Mesh
-  - Endereço unicast fixo para a K10
-
----
-
-## 11. Referências
-
-- ESP-BLE-MESH: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/bluetooth/esp_ble_mesh.html
-- Biblioteca LVGL: https://lvgl.io/
-- Protocolo RFID: [aprendizado/rfid_protocols.md](../aprendizado/rfid_protocols.md)
-- Criptografia: [secure_payload.c](../esp32_firmware/main/secure_payload.c)
-
----
-
-*Documento gerado em: 2026-05-20*
-*Versão: 1.0*
+*Documento atualizado em: 2026-06-17*
+*Versão: 2.0*

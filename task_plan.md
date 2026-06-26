@@ -53,9 +53,9 @@ Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 - [x] Adicionar script de teste `teste_automatizado/verify_encryption.py`
 - **Status:** complete
 
-### Phase 10: SIMCom 7663E -- Driver Celular PPP + MQTT
-- [x] Criar o módulo `simcom_ppp.c/.h` com comandos AT, PPP e watchdog celular
-- [x] Criar o módulo `mqtt_publisher.c/.h` com cliente MQTT nativo
+### Phase 10: SIMCom 7663E -- Driver Celular AT-MQTT + GPS
+- [x] Criar o módulo `simcom_driver.c/.h` com comandos AT e watchdog celular
+- [x] Criar o módulo `mqtt_publisher.c/.h` com cliente MQTT e chaveamento de rotas
 - [x] Criar script de teste `teste_automatizado/verify_mqtt_payload.py`
 - **Status:** complete
 
@@ -80,7 +80,7 @@ Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 
 ### Phase 14: Integração de Wi-Fi e Controle de Redundância de Rede
 - [x] Criar o módulo `wifi_driver.c/.h` para Wi-Fi Station
-- [x] Implementar lógica de suspensão do modem celular PPP (`simcom_ppp_set_suspended`)
+- [x] Implementar lógica de suspensão do modem celular (`simcom_driver_set_suspended`)
 - [x] Integrar comutador automático de rota: suspende celular no Wi-Fi IP, reativa quando Wi-Fi cai
 - [x] Criar script de teste `teste_automatizado/verify_redundancy.py`
 - **Status:** complete
@@ -199,8 +199,103 @@ Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 - **Status:** complete
 - **Resultado:** 88/88 testes passaram (0 falhas)
 
+### Phase 32: Reset STM32 via GPIO19 e Watchdog com Grace Period
+- [x] Adicionar pino STM32_RESET_PIN (GPIO19) em stm32_uart.h
+- [x] Implementar stm32_uart_reset_init() com gpio_set_level antes de gpio_config (evitar glitch)
+- [x] Implementar stm32_uart_reset_stm32() com pulso LOW 100ms
+- [x] Aplicar reset na inicializacao do ESP32 (500ms delay + 100ms pulso)
+- [x] Adicionar stm32_uart_has_ever_been_alive() para grace period
+- [x] Watchdog: so conta falhas apos primeiro heartbeat; limiar 120 ciclos
+- [x] Corrigir comentarios GPIO23 para GPIO19
+- [x] **Circuito com transistor NPN:** GPIO19 → transistor → NRST (logica invertida)
+  - [x] `reset_init`: inicial em LOW (transistor OFF, NRST HIGH, STM32 roda)
+  - [x] `reset_init`: modo Push-Pull (Open-Drain nao acionava transistor corretamente)
+  - [x] `reset_stm32`: HIGH 100ms → LOW (inverter logica)
+  - [x] Documentar circuito em PROJETO_BASTAO.md
+- **Status:** complete
+
+### Phase 33: Filtro de Deduplicacao de Leituras RFID
+- [x] Criar modulo rfid_dedup.c/.h com tabela circular de 64 entradas
+- [x] Implementar rfid_dedup_is_duplicate(tag, model, lat, lon, has_gps)
+- [x] Criterios: mesma tag + 10s janela + GPS < 50m (se disponivel)
+- [x] Integrar no dispatcher_task antes do processamento RFID
+- [x] Adicionar rfid_dedup_init() no app_main()
+- [x] Adicionar rfid_dedup.c ao CMakeLists.txt
+- **Status:** complete
+
+### Phase 34: Wake Sources RFID no STM32 Sleep
+- [x] Habilitar HAL_UARTEx_EnableStopMode(&huart3) para WL-134
+- [x] Habilitar HAL_UARTEx_EnableStopMode(&huart4) para YRM100
+- [x] Adicionar DisableStopMode correspondente ao sair do STOP mode
+- **Status:** complete
+
+### Phase 35: Correcao do Circuito de Reset com Transistor NPN
+- [x] Descobrir transistor NPN entre GPIO19 e NRST (logica invertida)
+- [x] Alterar modo de OUTPUT_OD para OUTPUT_PP (push-pull)
+- [x] reset_init: inicializar LOW (transistor OFF, STM32 roda)
+- [x] reset_stm32: HIGH 100ms (reset) → LOW (roda)
+- **Status:** complete
+
+### Phase 36: Filtro de Deduplicacao RFID
+- [x] Criar modulo rfid_dedup.c/.h com tabela circular de 64 entradas
+- [x] Criterios: mesma tag + modelo + 10s janela + GPS <50m
+- [x] Integrar rfid_dedup_is_duplicate() no dispatcher_task
+- [x] Adicionar ao CMakeLists.txt
+- **Status:** complete
+
+### Phase 37: Gerenciamento de Chip SIM (DSSS)
+- [x] Substituir AT+SWITCHSIM por AT*SELECTSIMSLOT (comando proprietario)
+- [x] Implementar sequencia DSSS: CFUN=0 → SELECTSIMSLOT → CFUN=1 → CPIN?
+- [x] Remover fallbacks SWITCHSIM/DUALSIM (outra serie)
+- [x] Corrigir CCID: AT+CCID → AT+CICCID
+- [x] Watchdog: swap so se chip ausente
+- **Status:** complete
+
+### Phase 38: Sincronizacao de Horario (Torre + SNTP)
+- [x] Criar simcom_driver_sync_time_from_tower() com AT+CCLK
+- [x] Inicializar SNTP com pool.ntp.org, a.ntp.br, b.ntp.br
+- [x] Adicionar log [HB] a cada 10s com horario formatado
+- [x] Adicionar log [MQTT_ENVIO] com payload pre-criptografia
+- **Status:** complete
+
+### Phase 39: Correcao Sleep STM32 e Wake via UART
+- [x] Aumentar POWER_SLEEP_TIMEOUT_MS para 120s
+- [x] Adicionar log JSON sleep/wake no STM32
+- [x] Re-armar UART RX interrupts apos wake
+- [x] ESP32 enviar \n como wake preventivo apos 60s
+- [x] Adicionar DATA_TYPE_POWER no parser do ESP32
+- **Status:** complete
+
+### Phase 40: Otimizacao UART (Blocos) e Core Pinning
+- [x] Alterar uart_read_bytes para ler blocos de ate 1024 bytes
+- [x] Fixar stm32_uart_rx_task e dispatcher_task no Core 0
+- [x] Fixar watchdog, MQTT, celular, OTA, cache, logger no Core 1
+- **Status:** complete
+
+### Phase 41: GPS Logs de Diagnostico
+- [x] Alterar logs GPS para ESP_LOGI (sempre visiveis)
+- [x] Adicionar logs de cold start, tentativas, parse e fix
+- [x] Adicionar prefixo [GPS] em todas as mensagens
+- **Status:** complete
+
+### Phase 42: Transição de PPP para Comandos AT Diretos (SIMCom MQTT)
+- [x] Criar novo driver `simcom_driver.c/.h` com comandos AT diretos
+- [x] Remover o uso da pilha PPP e `esp_netif_ppp`
+- [x] Implementar chaveamento dinâmico no publicador MQTT
+- [x] Atualizar a orquestração do OTA para rodar exclusivamente em Wi-Fi
+- [x] Atualizar documentações e roadmaps do projeto
+- **Status:** complete
+
+### Phase 45: Otimização SIMCom (Captura de Tags) + GPS Hot Start
+- [x] Desacoplar envio MQTT no modo CELLULAR_ONLY via fila/task dedicada
+- [x] Evitar recriação de task UART e reinstalação de driver no watchdog
+- [x] Ignorar sondagem física DSSS redundante de slots usando first_init_done
+- [x] Consultar status de sinal e tecnologia a partir do cache na leitura periódica
+- [x] Habilitar Hot Start de GPS enviando AT+CGNSSPWR=1,1 e AT+CGNSSPWR=0,1
+- **Status:** complete
+
 ## Tarefas Pendentes
-- **Nenhuma. Todas as fases 1-31 concluidas.**
+- **Nenhuma. Todas as fases 1-45 concluidas.**
 - **Status:** complete
 
 ## Key Questions
@@ -211,7 +306,7 @@ Phase 16: Protocolo de Comandos Remotos via MQTT e BLE
 | Decision | Rationale |
 |----------|-----------|
 | Banco de Dados NVS | Dados de negócios (Farm/Lot/Animal) persistidos na NVS com busca em array JSON dinâmico sob demanda para economizar RAM |
-| Redundância de Rede | Conexão de dados Wi-Fi STA priorizada sobre celular PPP para economizar custos e consumo. Suspensão celular automática enquanto Wi-Fi possui IP válido. |
+| Redundância de Rede | Conexão de dados Wi-Fi STA priorizada sobre celular 4G para economizar custos e consumo. Suspensão celular automática enquanto Wi-Fi possui IP válido. |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

@@ -79,7 +79,7 @@ sequenceDiagram
         Note over ESP, Cloud: Criptografia e Envio
         Note over ESP: Criptografia de payloads em AES
         ESP-->>K10: BLE Mesh (AES-CCM)
-        ESP-->>Cloud: Publicação MQTT (PPP / 4G)
+        ESP-->>Cloud: Publicação MQTT (Wi-Fi / SIMCom AT-MQTT)
     end
 ```
 
@@ -100,9 +100,10 @@ O código do projeto está dividido em dois blocos lógicos:
   1. *Task UART Receiver*: Recebe as strings de dados formatadas em JSON vindas do STM32.
   2. *Task Cryptography*: Codifica as mensagens usando algoritmo AES antes do envio.
   3. *Task BLE Mesh*: Gerencia a whitelist de UUIDs e envia as informações de tags para a tela.
-  4. *Task SIMCom MQTT*: Inicializa a interface PPP e realiza as publicações MQTT com segurança SSL/TLS.
+  4. *Task SIMCom MQTT*: Inicializa o modem celular via comandos AT e gerencia as publicações/subscrições MQTT diretamente no modem SIMCom (sem usar PPP).
   5. *Task Bluetooth Mobile*: Inicializa o GATT Server para sincronização segura com celular de dados de configuração e de negócio.
-  6. *Task OTA Manager*: Gerencia o download seguro HTTPS e gravação do firmware na partição de boot inativa, selecionando entre Wi-Fi ou 4G dependendo da disponibilidade.
+  6. *Task OTA Manager*: Gerencia o download seguro HTTPS e gravação do firmware na partição de boot inativa. Restrito a Wi-Fi (`esp_https_ota` exige LwIP). Partições A/B (`ota_0`/`ota_1`) com rollback via `esp_ota_mark_app_valid_cancel_rollback()`. Acionado por MQTT: `{"cmd":"ota","url":"https://..."}`.
+     * **Não suporta**: OTA via 4G, OTA na tela K10, FOTA do modem SIMCom.
   7. *Task Offline Storage (Spooler)*: Gerencia a gravação de registros na partição flash local (LittleFS/SPIFFS) quando offline, e o envio/descarte sequencial (FIFO) para a nuvem quando a conexão é restabelecida.
 
 ---

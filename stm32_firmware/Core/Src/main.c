@@ -37,7 +37,13 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define YRM100_POLL_MS 100
 
+/* Modo de teste do YRM100:
+   - Faz poll a cada 500ms
+   - Envia dump hex dos bytes recebidos para o ESP32
+   - Nao processa tags, buzzer, bateria, etc */
+// #define YRM100_TEST_MODE
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -61,8 +67,8 @@ uint8_t cmd_line_buffer[CMD_BUFFER_SIZE];
 volatile uint16_t cmd_line_index;
 
 uint32_t last_battery_check = 0;
-uint32_t last_yrm100_poll = 0;
 uint32_t last_heartbeat = 0;
+uint32_t last_yrm100_poll = 0;
 
 /* USER CODE END PV */
 
@@ -75,7 +81,9 @@ static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USART4_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+#ifdef YRM100_TEST_MODE
+static void YRM100_TestLoop(void);
+#endif
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -130,15 +138,22 @@ int main(void)
 
   HAL_Delay(100);
 
-  HAL_UART_Receive_IT(&huart3, &byte_wl134, 1);
+  /* Ativa RX do YRM100 ANTES de iniciar (precisa receber respostas dos comandos de configuracao) */
   HAL_UART_Receive_IT(&huart4, &byte_yrm100, 1);
-  HAL_UART_Receive_IT(&huart2, &cmd_byte, 1);
 
-  YRM100_SetTXPower(26);
+  /* Inicializa YRM100: modo, regiao US/America, potencia 20dBm, salva na flash,
+     le config de volta e envia para ESP32 */
+  YRM100_Init();
+
+  HAL_UART_Receive_IT(&huart3, &byte_wl134, 1);
+  HAL_UART_Receive_IT(&huart2, &cmd_byte, 1);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
+#ifdef YRM100_TEST_MODE
+  YRM100_TestLoop();  /* nunca retorna */
+#else
   while (1)
   {
     RFID_Process_YRM100();
@@ -149,13 +164,13 @@ int main(void)
     Command_Process();
 
     uint32_t now = HAL_GetTick();
-    uint32_t hb_interval = (last_heartbeat == 0) ? HEARTBEAT_FIRST_MS : HEARTBEAT_INTERVAL_MS;
 
-    if (now - last_yrm100_poll > 100 && (!RFID_HasData(1) || (now - last_yrm100_poll > 250))) {
-        uint8_t cmd_inv[] = {0xBB, 0x00, 0x22, 0x00, 0x00, 0x22, 0x7E};
-        HAL_UART_Transmit(&huart4, cmd_inv, sizeof(cmd_inv), 50);
+    if (now - last_yrm100_poll >= YRM100_POLL_MS) {
+        YRM100_SinglePoll();
         last_yrm100_poll = now;
     }
+
+    uint32_t hb_interval = (last_heartbeat == 0) ? HEARTBEAT_FIRST_MS : HEARTBEAT_INTERVAL_MS;
 
     if (now - last_battery_check > 5000) {
         Battery_Read();
@@ -182,6 +197,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
+#endif /* YRM100_TEST_MODE */
 }
 
 /**
@@ -552,6 +568,59 @@ void Command_Process(void) {
         HAL_GPIO_WritePin(LED_STATUS_PORT, LED_STATUS_PIN, GPIO_PIN_RESET);
     }
 }
+
+#ifdef YRM100_TEST_MODE
+static void YRM100_TestLoop(void)
+{
+    uint8_t raw[256];
+    uint16_t len;
+    char hex[512];
+    char json[600];
+    uint32_t last_test_poll = 0;
+
+    while (1) {
+        uint32_t now = HAL_GetTick();
+        if (now - last_test_poll < 500) {
+            // Processa RX interrupt enquanto espera
+            continue;
+        }
+        last_test_poll = now;
+
+        // Descarrega buffer residual antes do comando
+        YRM100_FlushBuffer();
+
+        // Envia comando 0x22 (single poll)
+        uint8_t cmd[] = {0xBB, 0x00, 0x22, 0x00, 0x00, 0x22, 0x7E};
+        HAL_UART_Transmit(&huart4, cmd, sizeof(cmd), 100);
+
+        // Aguarda ate 200ms por dados
+        uint32_t start = HAL_GetTick();
+        while ((HAL_GetTick() - start) < 200) {
+            if (RFID_HasData(1)) break;
+        }
+
+        // Le todos os bytes brutos do buffer
+        len = YRM100_ReadRawBuffer(raw, sizeof(raw));
+
+        if (len == 0) {
+            char msg[] = "{\"type\":\"yrm100_test\",\"status\":\"no_response\"}\n";
+            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+        } else {
+            // Monta hex dump
+            int pos = 0;
+            for (uint16_t i = 0; i < len && pos < (int)sizeof(hex) - 10; i++) {
+                int n = sprintf(hex + pos, "%02X ", raw[i]);
+                if (n > 0) pos += n;
+            }
+            if (pos > 0) hex[pos - 1] = '\0'; // remove trailing space
+            else hex[0] = '\0';
+
+            sprintf(json, "{\"type\":\"yrm100_test\",\"len\":%d,\"hex\":\"%s\"}\n", len, hex);
+            HAL_UART_Transmit(&huart2, (uint8_t*)json, strlen(json), 100);
+        }
+    }
+}
+#endif /* YRM100_TEST_MODE */
 
 /* USER CODE END 4 */
 

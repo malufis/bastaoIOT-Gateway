@@ -16,7 +16,7 @@
 #include "esp_https_ota.h"
 #include "esp_crt_bundle.h"
 #include "esp_netif.h"
-#include "simcom_ppp.h"
+#include "simcom_driver.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -36,14 +36,11 @@ static void ota_task(void *pvParameters) {
     if (wifi_netif != NULL) {
         wifi_connected = esp_netif_is_netif_up(wifi_netif);
     }
-    bool ppp_connected = simcom_ppp_is_connected();
 
     if (wifi_connected) {
-        ESP_LOGI(TAG, "Interface Wi-Fi ativa. Download OTA priorizado via rede local.");
-    } else if (ppp_connected) {
-        ESP_LOGI(TAG, "Interface Celular (PPP) ativa. Download OTA via rede 4G.");
+        ESP_LOGI(TAG, "Interface Wi-Fi ativa. Download OTA iniciado via rede local.");
     } else {
-        ESP_LOGE(TAG, "Nenhuma interface de rede ativa conectada a internet. Abortando OTA.");
+        ESP_LOGE(TAG, "Sem rota TCP/IP ativa. Atualizacao OTA restrita ao Wi-Fi (PPP desativado). Abortando OTA.");
         vTaskDelete(NULL);
         return;
     }
@@ -99,6 +96,6 @@ esp_err_t ota_manager_start(const char *bin_url) {
     }
     strncpy(ota_url, bin_url, sizeof(ota_url) - 1);
 
-    BaseType_t ret = xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL);
+    BaseType_t ret = xTaskCreatePinnedToCore(ota_task, "ota_task", 8192, NULL, 4, NULL, 1);
     return (ret == pdPASS) ? ESP_OK : ESP_FAIL;
 }

@@ -13,6 +13,7 @@
 #define STM32_UART_H
 
 #include "driver/uart.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -43,6 +44,16 @@ extern "C" {
 /** @brief Tamanho do buffer de recepcao serial em bytes. */
 #define STM32_UART_BUF_SIZE  1024
 
+/** @brief Pino GPIO do ESP32 usado para reset do STM32 via transistor NPN (lógica invertida).
+ * 
+ *  @warning A lógica é INVERTIDA por causa do transistor:
+ *           GPIO19 HIGH → transistor ON  → NRST LOW  → STM32 em reset
+ *           GPIO19 LOW  → transistor OFF → NRST HIGH → STM32 roda
+ * 
+ *  @note Configurado como Push-Pull (sem pull-up) para acionar o transistor corretamente.
+ *        O NRST do STM32 tem pull-up interno e externo que mantém HIGH quando o transistor OFF. */
+#define STM32_RESET_PIN      GPIO_NUM_19
+
 /* --- Estruturas de Dados e Tipos --- */
 
 /**
@@ -54,7 +65,8 @@ typedef enum {
     DATA_TYPE_ACCEL,    /**< Dados do acelerometro da K10 */
     DATA_TYPE_RFID_WITH_ACCEL, /**< RFID com dados de movimento */
     DATA_TYPE_ALERT,    /**< Alerta do STM32 (bateria critica/baixa) */
-    DATA_TYPE_HEARTBEAT /**< Heartbeat periodico do STM32 */
+    DATA_TYPE_HEARTBEAT, /**< Heartbeat periodico do STM32 */
+    DATA_TYPE_POWER     /**< Reservado (nao utilizado) */
 } data_type_t;
 
 /**
@@ -126,9 +138,38 @@ esp_err_t stm32_uart_send_string(const char *str);
 uint8_t stm32_uart_is_stm32_alive(void);
 
 /**
+ * @brief Verifica se o STM32 ja enviou ao menos um heartbeat desde o boot.
+ * @return 1 se ja recebeu heartbeat, 0 se nunca.
+ */
+uint8_t stm32_uart_has_ever_been_alive(void);
+
+/**
  * @brief Reseta o watchdog do STM32.
  */
 void stm32_uart_watchdog_reset(void);
+
+/**
+ * @brief Configura o pino GPIO19 como Push-Pull para controle de reset do STM32.
+ * @details O GPIO19 aciona um transistor NPN que controla o NRST do STM32.
+ *          A logica e invertida: nivel LOW mantem o STM32 rodando,
+ *          nivel HIGH poe o STM32 em reset.
+ *          
+ * @note O pino e inicializado em LOW para que o STM32 saia do reset e rode.
+ * @return esp_err_t ESP_OK se configurado com sucesso.
+ */
+esp_err_t stm32_uart_reset_init(void);
+
+/**
+ * @brief Gera pulso de reset no STM32 via transistor.
+ * @details Sequencia: GPIO19 HIGH (transistor ON, NRST LOW) por 100ms,
+ *          depois GPIO19 LOW (transistor OFF, NRST HIGH).
+ *          O STM32 e reiniciado apos o pulso.
+ * 
+ * @warning A logica e invertida pelo transistor NPN:
+ *          - HIGH = reset (NRST LOW)
+ *          - LOW  = operacao normal (NRST HIGH)
+ */
+void stm32_uart_reset_stm32(void);
 
 #ifdef __cplusplus
 }

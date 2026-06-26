@@ -1,0 +1,10 @@
+!SESSION 2026-06-23 07:44:58.404 -----------------------------------------------
+eclipse.buildId=Version 1.16.0
+java.version=17.0.11
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=pt_BR
+Framework arguments:  -application org.eclipse.cdt.managedbuilder.core.headlessbuild -import d:\git\Bastao\Bastao-ESP\stm32_firmware -cleanBuild bastao-Stm32/Debug
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 -application org.eclipse.cdt.managedbuilder.core.headlessbuild -data d:\git\Bastao\Bastao-ESP\.stm32_workspace -import d:\git\Bastao\Bastao-ESP\stm32_firmware -cleanBuild bastao-Stm32/Debug
+
+!ENTRY org.eclipse.cdt.core 1 0 2026-06-23 07:45:16.338
+!MESSAGE Indexed 'bastao-Stm32' (31 sources, 126 headers) in 4,45 sec: 11.314 declarations; 50.139 references; 3 unresolved inclusions; 26 syntax errors; 171 unresolved names (0,28%)

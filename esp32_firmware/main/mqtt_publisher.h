@@ -36,7 +36,7 @@ extern "C" {
 #define MQTT_PAYLOAD_MAX_LEN 512
 
 /** @brief Profundidade da fila de publicacao MQTT. */
-#define MQTT_PUBLISH_QUEUE_DEPTH 20
+#define MQTT_PUBLISH_QUEUE_DEPTH 50
 
 /* --- Estruturas de Dados --- */
 
@@ -62,8 +62,9 @@ typedef struct {
  */
 typedef struct {
   char topic[MQTT_TOPIC_MAX_LEN];     /**< Topico de destino */
-  char payload[MQTT_PAYLOAD_MAX_LEN]; /**< Payload criptografado em hex */
+  char payload[MQTT_PAYLOAD_MAX_LEN]; /**< Payload JSON ou hex criptografado */
   uint8_t qos;                        /**< Nivel de QoS MQTT (0, 1 ou 2) */
+  bool needs_encrypt;                 /**< true = raw JSON (encrypt na task), false = ja criptografado */
 } mqtt_publish_msg_t;
 
 /* --- Variaveis Globais --- */
@@ -84,7 +85,7 @@ extern QueueHandle_t mqtt_publish_queue;
  *
  * @param[in] config Ponteiro para a estrutura de configuracao do broker MQTT.
  *
- * @pre A interface de rede PPP deve estar ativa (simcom_ppp_connect ok).
+ * @pre A interface de rede Wi-Fi deve estar ativa para o cliente nativo.
  * @post O cliente MQTT esta instanciado e tenta a conexao ao broker.
  *
  * @return esp_err_t ESP_OK se o cliente foi criado e a conexao iniciada.
@@ -133,6 +134,9 @@ bool mqtt_publisher_is_connected(void);
  */
 esp_err_t mqtt_publisher_enqueue(const char *topic, const char *payload,
                                  uint8_t qos);
+
+esp_err_t mqtt_publisher_enqueue_raw(const char *topic, const char *payload,
+                                     uint8_t qos);
 
 #ifdef __cplusplus
 }

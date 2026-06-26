@@ -669,6 +669,54 @@ K10 (gui_task, a cada 500ms):
 
 ---
 
+## Sessão 33 — Correção MQTT Publish (CMQTTREL ausente) + Race Condition GPS/Time
+**Data:** 2026-06-25
+**Objetivo:** Corrigir ciclo infinito de falha MQTT que impedia GPS e time sync de funcionar.
+
+### Problemas Resolvidos
+- `AT+CMQTTREL=0` nunca era chamado após `AT+CMQTTPUB` em `simcom_driver_mqtt_publish()`. O message ID 0 ficava ocupado, fazendo o próximo `AT+CMQTTTOPIC=0,34` retornar `+CMQTTTOPIC: 0,14` ERROR.
+- Isso criava um loop: publish OK → próximo topic ERROR → cache re-enqueue → 500ms → retry → publish OK → topic ERROR...
+- O tráfego MQTT contínuo saturava o mutex e a UART, impedindo comandos GPS (`AT+CGPSINFO`) e time sync (`AT+CCLK?`) de executar.
+- O mutex era liberado ANTES do `CMQTTPUB`, permitindo que outra task (GPS) enviasse comandos AT no meio da transação MQTT, corrompendo os buffers de resposta (`awaiting_response` / `cmd_response_buf` / `response_sem` globais).
+
+### Modificações
+- `esp32_firmware/main/simcom_driver.c`:
+  - `simcom_driver_mqtt_publish()`: Adicionado `AT+CMQTTREL=0` no início (cleanup de estado residual) e após `CMQTTPUB` bem-sucedido (libera message ID 0).
+  - Mutex agora é mantido durante TODO o ciclo (topic → payload → publish → release), eliminando race condition entre MQTT e outros comandos AT.
+  - `xSemaphoreGive(simcom_mutex)` movido para depois do `CMQTTREL`, não mais antes do `CMQTTPUB`.
+  - `simcom_mutex` é `xSemaphoreCreateMutex()` — herança de prioridade FreeRTOS previne priority inversion quando orchestrator (prio 5) espera publish task (prio 4).
+
+---
+
+## Sessão 38 — Remoção de Configuração YRM100 do STM32 (SetTXPower)
+**Data:** 2026-06-25
+**Objetivo:** Remover todas as configurações enviadas ao módulo YRM100 via STM32. O usuário passará a configurar o YRM100 diretamente (via terminal serial), sem intervenção do STM32.
+
+### Problemas Resolvidos
+- O comando `0xB6` (Set TX Power) era enviado ao YRM100 pelo STM32 durante o boot (`YRM100_SetTXPower(26)`) e sob demanda via ESP32 (`yrm_tx_power`). Isso causava conflitos de configuração quando o usuário tentava configurar o módulo diretamente.
+- A função `YRM100_SetTXPower()` e todo o pipeline de configuração foram removidos.
+
+### Remoções
+
+**STM32:**
+- `Core/Inc/rfid_parser.h`: Removido protótipo `YRM100_SetTXPower(uint8_t dbm)`
+- `Core/Src/rfid_parser.c`: Removida função `YRM100_SetTXPower()` (comando `0xB6` com potência em centésimos de dBm)
+- `Core/Src/main.c`: Removida chamada `YRM100_SetTXPower(26)` no boot
+- `Core/Src/alerts.c`: Removido handler do comando `{"cmd":"yrm_tx_power","value":<dbm>}`
+
+**ESP32:**
+- `main/stm32_cmd.c`: Removida função `stm32_cmd_send_yrm_tx_power()`
+- `main/stm32_cmd.h`: Removido protótipo `stm32_cmd_send_yrm_tx_power()`
+- `main/main.c`: Removida chamada `stm32_cmd_send_yrm_tx_power(bastao_current_config.yrm100_power)` no boot
+
+### Mantido
+- Alimentação do YRM100 via GPIO (`yrm_power`, `rfid_on`/`rfid_off`) — essencial para ligar/desligar o módulo
+- RX UART + buffer circular + parsing de frames (`RFID_Process_YRM100`) — necessário para receber tags
+- Comando de inventário `0x22` (poll a cada 100-250ms) — operação, não configuração
+- Campo `yrm100_power` na config BLE — armazenado mas não enviado ao módulo
+
+---
+
 # Guia de Referência: Agents e Skills do Projeto Bastao-ESP
 
 ## Agents Disponíveis
@@ -768,6 +816,476 @@ skill(name="c-best-practices")
 4. Verificar → lint, build, testes
 5. Documentar → AGENTS.md (sessão) + comments Doxygen
 ```
+
+---
+
+---
+
+## Sessão 34 — Otimização Completa da Pilha FreeRTOS
+**Data:** 2026-06-25
+**Objetivo:** Reorganizar prioridades, eliminar contenção de mutex para garantir RFID no topo, GPS/time non-blocking, datalogger offline estável.
+
+### Problemas Raiz
+
+1. **3 tasks competindo pelo `simcom_mutex`**: `mqtt_pub_task` + `cache_sync_task` + `system_orchestrator` — todas acessavam o driver SIMCom diretamente.
+2. **Cache sync bypassava a fila MQTT**: `offline_cache_sync_task` chamava `simcom_driver_mqtt_publish()` direto quando celular conectado, sem passar pela `mqtt_publish_queue`.
+3. **GPS e time sync bloqueantes**: `system_orchestrator` chamava `simcom_driver_get_gps()` e `simcom_driver_sync_time_from_tower()` com `at_send_cmd()` bloqueante (mutex timeout 4s). Com MQTT publicando por 3-10s, GPS e time sempre timeoutavam.
+4. **RX tasks em prioridade baixa**: podiam perder bytes UART.
+5. **`AT+CMQTTREL=0` ausente**: message ID 0 nunca liberado após publish (Sessão 33).
+
+### Modificações
+
+**`offline_cache.c`**: Cache sync agora sempre enfileira via `mqtt_publisher_enqueue()` — nunca mais chama `simcom_driver_mqtt_publish()` diretamente. Removeu dependência de `simcom_driver.h`. Elimina 1 concorrente do mutex.
+
+**`main.c`**: 
+- `offline_cache_sync_task_start(3)` → `(2)` — cache não é prioritário
+- `stm32_uart_rx_task_start(5)` → `(6)` — RX no topo do Core 0
+- GPS e time sync agora checam `simcom_driver_is_busy()` antes de chamar — se modem ocupado, pulam o ciclo (non-blocking)
+- RSSI celular lido do cache (`simcom_driver_get_cached_rssi()`) sem AT command
+
+**`simcom_driver.c`**:
+- `simcom_rx` priority 5 → **6** (topo do Core 1)
+- Adicionado `simcom_driver_get_cached_rssi()` — retorna RSSI sem tocar no modem
+
+**`mqtt_publisher.c`**: Task stack 4096 → **6144** (mais espaço para `simcom_driver_mqtt_publish()` com `char cmd[512]`)
+
+### Tabela de Prioridades Final
+
+| Task | Prio | Core | Prioridade |
+|------|:----:|:----:|------------|
+| `dispatcher_task` | **6** | 0 | 🔝 RFID |
+| `stm32_uart_rx_task` | **6** | 0 | 🔝 RX STM32 |
+| `simcom_rx` | **6** | 1 | 🔝 RX Modem |
+| `system_orchestrator` | **5** | 0 | Orquestração (agora non-blocking) |
+| `mqtt_pub_task` (6144 stk) | **4** | 1 | Publicação MQTT (única que toca o driver) |
+| `simcom_wd` | **3** | 1 | Watchdog modem |
+| `ota_task` | **5**→**4** | 1 | OTA (evento raro) |
+| `cache_sync_task` | **3**→**2** | 1 | Cache offline (só enfileira) |
+| `log_processor` | **3**→**2** | 1 | Logs |
+| `telnet_logger` | **3**→**2** | 1 | Debug |
+
+**Resultado:** Apenas 1 task (`mqtt_pub_task`) e o orchestrator (non-blocking) competem pelo `simcom_mutex`. RFID no topo absoluto. GPS e time sync não travam mais.
+
+---
+
+## Sessão 35 — Documentação Completa de OTA
+**Data:** 2026-06-25
+**Objetivo:** Mapear e documentar a capacidade OTA atual do projeto, limitações e próximos passos.
+
+### Entregas
+
+- **PROJETO_BASTAO.md**: Nova seção "Atualização OTA" com arquitetura de partições A/B, fluxo de disparo MQTT, tabela de limitações conhecidas (Wi-Fi apenas, sem K10, sem FOTA, sem CI/CD), geração de binário e teste.
+- **Manual/funcionalidades.md**: Seção 2.6 corrigida — removida menção incorreta a "4G", adicionado escopo real (ESP32 apenas), esclarecido funcionamento do rollback.
+- **Manual/arquitetura.md**: Task OTA Manager atualizada com notas sobre partições duais e rollback via `esp_ota_mark_app_valid_cancel_rollback()`.
+- **ROADMAP.md**: Adicionadas 3 fases planejadas: Fase 44 (OTA via 4G), Fase 45 (OTA na K10), Fase 46 (CI/CD + report de progresso).
+- **COMPILATION_GUIDE.md**: Nova seção 5 com instruções de geração de binário OTA, hospedagem HTTPS e disparo.
+- **README.md**: Indicadores de limitação OTA adicionados à feature list.
+- **progress.md**: Phase 47 registrada.
+- **AGENTS.md**: Esta sessão.
+
+### Diagnóstico da Capacidade OTA
+
+| Dispositivo | OTA Funcional? | Como? | Limitação |
+|-------------|:--------------:|-------|-----------|
+| ESP32 Coordenador | ✅ | HTTPS (Wi-Fi) | ❌ Não funciona via 4G |
+| Tela K10 | ❌ | — | Partição única `factory` |
+| Modem SIMCom | ❌ | — | AT+CFOTA não implementado |
+
+---
+
+## Sessão 36 — Correção: CMQTTREL com retry (PUBACK do QoS 1 ainda pendente)
+**Data:** 2026-06-25
+**Objetivo:** Corrigir `AT+CMQTTREL=0` que falhava com erro 14 ("client is busy") após `AT+CMQTTPUB` com QoS 1.
+
+### Problema
+- `AT+CMQTTPUB=0,1,60` retorna OK imediatamente (modem aceitou o publish), mas o message ID 0 fica **ocupado** até o PUBACK do broker chegar.
+- `AT+CMQTTREL=0` enviado logo após o OK do CMQTTPUB sempre falha com `+CMQTTREL: 0,14` (erro 14 = busy).
+- O CMQTTREL no início do próximo publish (Sessão 33) tentava uma única vez com 1s de timeout — se o PUBACK demorasse >1s, falhava também.
+- Resultado: publish seguinte tentava `CMQTTTOPIC=0,34` com message ID 0 ocupado → `+CMQTTTOPIC: 0,14` ERROR → ciclo de falhas.
+
+### Modificações
+- `simcom_driver_mqtt_publish()` em `simcom_driver.c`:
+  - **Removido** `CMQTTREL` depois do `CMQTTPUB` (era inútil/muito cedo).
+  - **Adicionado** retry loop no início da função: 10 tentativas a cada 300ms (total ~3s) de `CMQTTREL=0` até sucesso.
+  - O PUBACK típico chega em 200-800ms, então o retry loop cobre o caso com folga.
+
+## Sessão 37 — Correção: Payload MQTT `nivel_bateria` enviava tensão em vez de percentual
+
+---
+
+## Sessão 38 — Ativação do RFID Dedup (janela de 1 minuto)
+**Data:** 2026-06-25
+**Objetivo:** Não enviar a mesma tag RFID repetidamente dentro do intervalo de 1 minuto.
+
+### Problema
+- `rfid_dedup_is_duplicate()` era inicializada mas **NUNCA chamada** no `dispatcher_task`. Toda tag — mesmo idêntica lida 10x em 1s — passava pelo pipeline completo: DB lookup, BLE Mesh, criptografia AES, MQTT publish.
+- Janela de dedup era 10s, mas o requisito é 1 minuto.
+
+### Modificações
+- `rfid_dedup.h`: `RFID_DEDUP_WINDOW_MS` 10000 → **60000** (1 minuto)
+- `main.c` dispatcher_task: Adicionado `rfid_dedup_is_duplicate()` logo após o check de tipo RFID. Se duplicata, `continue` — pula totalmente o processamento (Mesh + MQTT).
+
+---
+
+## Sessão 37 — Correção: Payload MQTT `nivel_bateria` enviava tensão em vez de percentual
+**Data:** 2026-06-25
+**Objetivo:** Corrigir `nivel_bateria` no payload MQTT que enviava tensão bruta (ex: `8.50`) em vez do percentual 0-100.
+
+### Problema
+- O payload `nivel_bateria` em `main.c:122` usava `bastao_current_status.battery_voltage` (tensão bruta) diretamente formatado como `%.2f`.
+- O cálculo de percentual (`pct`) existia (linhas 132-135: 7.50V=0%, 8.80V=100%) mas só era usado no payload da BLE Mesh, nunca no MQTT.
+- A tela K10 mostrava o percentual correto porque recebia `{"type":"batt","volt":x,"pct":y}` via Mesh, mas a nuvem recebia `nivel_bateria`: 8.50.
+
+### Modificações
+- `esp32_firmware/main/main.c`: Linhas 119-122 — `batt` (float, tensão) substituído por `batt_pct` (int, percentual). Mapeamento: 7.50V→0%, 8.80V→100%.
+
+---
+
+## Sessão 39 — Otimização de Throughput RFID + Telnet Debug
+**Data:** 2026-06-25
+**Objetivo:** Eliminar bottlenecks que causavam lentidão na leitura das tags RFID e habilitar debug via Telnet para monitoramento remoto.
+
+### Problemas Resolvidos
+
+**1. AES-256 encryption bloqueava dispatcher_task (Core 0, prio 6):**
+- `secure_payload_encrypt()` era chamada **inline** no `dispatcher_task` para cada tag RFID lida. AES-256-CBC leva 5-50ms por tag, bloqueando o processamento de novas tags durante esse período.
+- Se 2+ tags chegassem em rápida sucessão, a fila `stm32_data_queue` (depth 50) enchia e tags eram perdidas.
+
+**2. Telnet Logger não capturava logs do ESP-IDF:**
+- `esp_logger_write()` criava uma fila de logs própria (`log_queue`), mas **ninguém chamava** essa função. Todo o sistema usa `ESP_LOGI()`, `ESP_LOGE()` etc., que iam direto para UART via `vprintf()` padrão do ESP-IDF.
+- Conectar via Telnet não mostrava absolutamente nada.
+
+**3. stm32_uart_rx_task e dispatcher_task no mesmo Core (0) com mesma prioridade (6):**
+- Ambas as tasks rodavam no Core 0 com prioridade 6, causando contenção de CPU.
+- `uart_read_bytes()` com timeout de 20ms no RX task bloqueava o dispatcher indiretamente.
+
+**4. cJSON pesado no RX task de alta prioridade:**
+- O parsing de cada JSON com `cJSON_Parse()` (malloc/free) era executado na task de RX (prio 6), ocupando CPU preciosa.
+
+### Modificações
+
+**1. AES Encryption movido para mqtt_publish_task (Core 1, prio 4):**
+- `esp32_firmware/main/mqtt_publisher.h`: Adicionado campo `needs_encrypt` em `mqtt_publish_msg_t`
+- `esp32_firmware/main/mqtt_publisher.h`: Adicionado protótipo `mqtt_publisher_enqueue_raw()`
+- `esp32_firmware/main/mqtt_publisher.c`: Adicionado `#include "secure_payload.h"`
+- `esp32_firmware/main/mqtt_publisher.c`: `mqtt_publish_task()` agora chama `secure_payload_encrypt()` antes de publicar/salvar no cache
+- `esp32_firmware/main/mqtt_publisher.c`: `mqtt_publisher_enqueue_raw()` — raw JSON com `needs_encrypt=true`
+- `esp32_firmware/main/mqtt_publisher.c`: `mqtt_publisher_enqueue()` — pre-encrypted com `needs_encrypt=false` (backward compat)
+- `esp32_firmware/main/main.c`: `dispatcher_task` — removido `encrypted_hex[768]` da stack, removido `secure_payload_encrypt()`, agora chama `mqtt_publisher_enqueue_raw()` com JSON cru.
+- **Resultado:** dispatcher task leva apenas ~1ms para enfileirar, libera CPU imediatamente para próxima tag.
+
+**2. Telnet Logger com vprintf hook:**
+- `esp32_firmware/main/esp32_logger.c`: Adicionada função `telnet_vprintf()` que captura TODAS as saídas formatadas do ESP-IDF (ESP_LOGI/LOGE/etc)
+- `esp32_firmware/main/esp32_logger.c`: Hook registrado com `esp_log_set_vprintf(telnet_vprintf)` em `esp_logger_init()`
+- `esp32_firmware/main/esp32_logger.c`: O hook mantém saída UART original + broadcast para clientes Telnet
+- `esp32_firmware/main/esp32_logger.c`: Stack da task telnet aumentada 4096→6144
+- **Resultado:** `telnet <esp32_ip>` mostra todos os logs em tempo real.
+
+**3. stm32_uart_rx_task movido para Core 1:**
+- `esp32_firmware/main/stm32_uart.c`: `xTaskCreatePinnedToCore(..., 0)` → `(..., 1)`
+- **Resultado:** RX UART no Core 1, dispatcher_task no Core 0 — zero contenção.
+
+### Fluxo Novo de Leitura de Tag (sem bloqueio AES no dispatcher)
+```
+STM32 → UART → stm32_uart_rx_task (Core 1, prio 6)
+  → Queue → dispatcher_task (Core 0, prio 6): 
+    → dedup check (~1μs)
+    → animal_db_lookup (~1ms)
+    → mesh_coordinator_send_data (non-blocking)
+    → mqtt_publisher_enqueue_raw (QUEUE, ~1μs) ← SEM AES AQUI
+      → Queue → mqtt_pub_task (Core 1, prio 4):
+        → secure_payload_encrypt (5-50ms) ← AES AQUI
+        → publish/cache
+```
+
+### Conectando via Telnet
+```bash
+telnet <ip_do_esp32>   # porta 23
+# Todos os logs ESP_LOGI/LOGE aparecem em tempo real
+```
+
+---
+
+## Sessão 40 — Correção YRM100: Configuração de Região + Potência TX
+**Data:** 2026-06-26
+**Objetivo:** Resolver leitura do YRM100 que não lia tags por falta de configuração de região e potência RF.
+
+### Problemas Resolvidos
+- **Região de frequência nunca configurada (0x07):** O YRM100 saía de fábrica configurado para China (920-925MHz), mas o Brasil usa faixa FCC 902-928MHz (US/América, parâmetro 0x02). Sem essa configuração, o módulo transmitia em frequências erradas e não energizava as tags.
+- **Potência TX removida (Sessão 38):** `YRM100_SetTXPower(26)` foi removido — módulo operava em potência padrão (possivelmente 0dBm), insuficiente para leitura.
+- **Sem handler dinâmico:** ESP32 não tinha como ajustar potência do YRM100 em tempo real.
+
+### Análise Comparativa
+| Característica | WL-134 (LF) ✅ | YRM100 (UHF) ❌ Antes |
+|---|---|---|
+| Protocolo | ASCII 30 bytes fixos | Binário variável |
+| Polling | Não (automático) | Sim (comando 0x22) |
+| Configuração inicial | Nenhuma | Região (0x07) + Potência (0xB6) |
+| Alimentação | Só ligar | Precisa estabilização RF + região correta |
+
+### Modificações
+
+**STM32 (`rfid_parser.h`):**
+- Adicionado `YRM100_Init(void)` — sequência de inicialização
+- Adicionado `YRM100_SetRegion(uint8_t region)` — comando 0x07
+- Adicionado `YRM100_SetTXPower(uint8_t dbm)` — comando 0xB6 (dbm → centésimos ×100)
+- Adicionado `YRM100_StartContinuousRead(void)` — comando 0x27 (Multiple Inventory)
+- Adicionado `YRM100_StopContinuousRead(void)` — comando 0x28
+
+**STM32 (`rfid_parser.c`):**
+- `YRM100_SetRegion()`: Monta frame `BB 00 07 00 01 <region> <CS> 7E`, aguarda resposta
+- `YRM100_SetTXPower()`: Monta frame `BB 00 B6 00 02 <power_h> <power_l> <CS> 7E`, aguarda resposta
+- `YRM100_StartContinuousRead()`: Monta frame `BB 00 27 00 03 22 FF FF <CS> 7E` — 65535 ciclos
+- `YRM100_StopContinuousRead()`: Monta frame `BB 00 28 00 00 28 7E`
+- `YRM100_Init()`: Chama SetRegion(0x02) → delay → SetTXPower(20dBm) → **StartContinuousRead()**
+
+**STM32 (`main.c`):**
+- Chamada `YRM100_Init()` após `HAL_Delay(100)` no boot
+- **Removido** polling periódico de 0x22 (single inventory) a cada 100ms
+- **Removida** variável `last_yrm100_poll`
+
+**STM32 (`alerts.c`):**
+- Handler `{"cmd":"yrm_tx_power","value":20}` — para, ajusta potência, reinicia inventário
+- Handler `{"cmd":"yrm_restart"}` — reinicia o módulo completo
+
+### Mudança de Arquitetura: Single Poll → Continuous Read
+
+| Antes (0x22 poll) | Depois (0x27 contínuo) |
+|---|---|
+| Envia comando a cada 100ms | PA fica ligado continuamente |
+| 10 ciclos/s máx | Até 30-50 ciclos/s |
+| PA liga/desliga a cada ciclo | PA sempre ligado (mais rápido) |
+| Perde tags entre polls | Detecta tags em tempo real |
+| `HAL_UART_Transmit` bloqueante a cada 100ms | Sem TX periódico (só RX) |
+
+### Sequência Correta de Inicialização
+1. **Set Mode** → `BB 00 F5 00 01 01 F7 7E` (modo de operação)
+2. **Set Region** → `BB 00 07 00 01 02 0A 7E` (US/América 902-928 MHz)
+3. **Set TX Power** → `BB 00 B6 00 02 07 D0 8F 7E` (20 dBm)
+4. **Save Config** → `BB 00 09 00 01 01 0B 7E` (persiste na flash do módulo)
+5. **Multiple Inventory** → `BB 00 27 00 03 22 FF FF 4A 7E` (65535 ciclos)
+
+### Comandos Configurados
+- **Região:** `0x02` (US/América, 902-928 MHz) — compatível com ANATEL Brasil
+- **Potência:** 20 dBm (2000 centésimos = `0x07D0`)
+- **Frame Set Mode:** `BB 00 F5 00 01 01 F7 7E`
+- **Frame Set Region:** `BB 00 07 00 01 02 0A 7E`
+- **Frame Set Power:** `BB 00 B6 00 02 07 D0 8F 7E`
+- **Frame Save Config:** `BB 00 09 00 01 01 0B 7E`
+- **Frame Multiple Inventory:** `BB 00 27 00 03 22 FF FF 4A 7E`
+
+---
+
+## Sessão 41 — GPS Adaptativo: Polling 2s (busca) / 30s (fix)
+**Data:** 2026-06-26
+**Objetivo:** Acelerar aquisição do sinal GPS com polling a cada 2s até obter fix, depois reduzir para 30s.
+
+### Problema
+- GPS era lido sempre a cada 30s, independente de ter fix ou não
+- Se o GPS perdia sinal (ou no boot), demorava até 30s para a primeira tentativa de aquisição
+
+### Solução
+- **Sem fix:** `system_orchestrator_task` lê GPS a cada **2 segundos** (busca rápida)
+- **Com fix:** após `gps_fix = true`, intervalo muda automaticamente para **30 segundos**
+- A transição é automática e logada: `"GPS FIX OBTIDO! Mudando para polling de 30s."`
+- O intervalo é calculado a cada ciclo: `uint32_t gps_interval = bastao_current_status.gps_fix ? 30 : 2;`
+- Mantido o guard `!simcom_driver_is_busy()` para não travar o modem durante MQTT
+
+### Modificações
+**`esp32_firmware/main/main.c`** (`system_orchestrator_task`):
+- Substituído `gps_tick >= 30` fixo por `gps_tick >= gps_interval` adaptativo
+- Adicionada variável local `simcom_gps_data_t gps_new` para leitura atômica
+- Log de transição quando fix é obtido
+- Estrutura do bloco GPS mantida (Mesh update + gateway status continuam atrelados ao ciclo de leitura)
+
+### Fluxo
+```
+Boot → gps_fix = false → poll de 2 em 2s
+  → simcom_driver_get_gps() → ESP_OK && valid
+  → gps_fix = true → "GPS FIX OBTIDO!"
+  → poll passa automaticamente para 30s
+```
+
+---
+
+## Sessão 42 — Otimização FreeRTOS: Prioridades, Stacks e Monitoramento
+**Data:** 2026-06-26
+**Objetivo:** Eliminar contenção entre SIMCom/RFID e acelerar atualização da tela K10.
+
+### Problemas Identificados
+
+**Contenção SIMCom vs RFID (Coordinator):**
+- `cache_sync_task` (prio 2) drenava cache muito lentamente quando MQTT voltava
+- `ota_task` (prio 5) tinha prioridade excessiva para evento raro
+- `stm32_uart_rx_task` (stack 4096) e `mqtt_pub_task` (stack 6144) podiam estar no limite com buffers JSON/AES
+- Nenhum monitoramento de stack — estouro passava despercebido
+
+**Lentidão da tela (K10):**
+- Poll de dados Mesh a cada **200ms** — tag demorava até 200ms para aparecer
+- `network_task` a **prio 5** para task ociosa (só delay de 1s)
+
+### Modificações
+
+**ESP32 Coordinator (`main.c`):**
+- `offline_cache_sync_task_start(2)` → `(3)` — drain mais rápido do cache
+- Adicionado `uxTaskGetStackHighWaterMark` para 9 tasks no boot
+
+**ESP32 Coordinator (`stm32_uart.c`):**
+- Stack da `stm32_uart_rx_task`: 4096 → **5120** bytes
+
+**ESP32 Coordinator (`mqtt_publisher.c`):**
+- Stack da `mqtt_pub_task`: 6144 → **8192** bytes (AES + JSON)
+
+**ESP32 Coordinator (`ota_manager.c`):**
+- Prioridade da `ota_task`: 5 → **4** (evento raro)
+
+**K10 (`main.c`):**
+- Poll de dados Mesh: `sensor_timer >= 20` (200ms) → `>= 5` (**50ms**)
+- Prioridade da `network_task`: 5 → **1** (task ociosa)
+- Adicionado `uxTaskGetStackHighWaterMark` no boot
+
+### Tabela de Prioridades Final
+
+**Coordinator:**
+| Prio | Core 0 | Core 1 |
+|:----:|:-------|:-------|
+| **6** | `dispatcher_task` (RFID) | `stm32_uart_rx_task`, `simcom_rx` |
+| **5** | `system_orchestrator` | — |
+| **4** | — | `mqtt_pub_task`, `ota_task` (eventual) |
+| **3** | — | `simcom_wd`, `log_processor`, `telnet_logger`, `cache_sync_task`, **`gps_reader`** |
+| **2** | — | — |
+
+**K10:**
+| Prio | Core 0 | Core 1 |
+|:----:|:-------|:-------|
+| **5** | — | `gui_task` (LVGL + sensores) |
+| **1** | `network_task` (ociosa) | — |
+
+---
+
+## Sessão 43 — GPS em Task Separada + Correção de Polling
+**Data:** 2026-06-26
+**Objetivo:** Corrigir GPS que não lia a cada 2s e parar de travar o loop do orchestrator.
+
+### Problema Raiz
+O `system_orchestrator_task` rodava a cada 1s (`vTaskDelay(1000)`), mas `simcom_driver_get_gps()` bloqueava por **~1-2s** (AT+CGPSINFO + AT+CGNSSINFO sem fix). Resultado: o loop inteiro levava ~2-3s, e com `gps_interval=2` o GPS era lido a cada **~4-6s** em vez de 2s.
+
+### Solução
+Criada `gps_reader_task` (prio 3, Core 1, stack 4096) separada que:
+1. Aguarda notificação do orchestrator via `xTaskNotify`
+2. Chama `simcom_driver_get_gps()` em background (pode bloquear à vontade)
+3. Atualiza `gps_data` e `bastao_current_status`
+4. Sinaliza `gps_read_done` quando termina
+
+O orchestrator agora:
+1. Incrementa `gps_tick` a cada 1s (não bloqueia mais)
+2. Quando `gps_tick >= gps_interval`, envia notificação para a GPS task
+3. No próximo ciclo, se `gps_read_done`, envia dados para K10 via Mesh
+4. Loop roda sempre a **~1s** independente do GPS
+
+### Fluxo Novo
+```
+Orchestrator (1s loop):            GPS Reader Task (background):
+  gps_tick++                         xTaskNotifyWait(5000ms)
+  if (tick >= intervalo) {           if notified:
+    xTaskNotify(gps_reader)            simcom_driver_get_gps()
+    gps_read_pending = true              → bloqueia 1-3s (OK aqui)
+  }                                     atualiza gps_data
+  if (gps_read_done):                   gps_read_done = true
+    envia Mesh }                      }
+```
+
+### Arquivos Modificados
+- `main.c`: Adicionada `gps_reader_task`, globais de sincronização, criação da task em `app_main`
+- `AGENTS.md`: Esta sessão
+
+---
+
+## Sessão 44 — Correções Finais: Nomes de Task, CMQTTREL, WiFi AP, BLE Mesh Segments + Documentação
+**Data:** 2026-06-26
+**Objetivo:** Corrigir travamento do ESP32 (assert xTaskGetHandle), retry loop MQTT, ordem de init do WiFi AP, BLE Mesh segment exhaustion, e gerar documentação completa do projeto.
+
+### Problemas Resolvidos
+
+**Bug 1 — Assert xTaskGetHandle (nome de task > 15 chars):**
+- `xTaskGetHandle()` no FreeRTOS requer nomes com strlen < 16. 
+- `"stm32_uart_rx_task"` (18) e `"system_orchestrator"` (19) estouravam o limite.
+- Corrigido: `stm32_uart_rx_task` → `stm32_uart_rx`, `system_orchestrator` → `sys_orchestr`
+
+**Bug 2 — CMQTTREL sem retry (MQTT falhando):**
+- `AT+CMQTTREL=0` era tentado uma única vez, mas com QoS 1 o message ID 0 fica ocupado até PUBACK.
+- Adicionado retry loop: 10 tentativas a cada 300ms (3s totais).
+
+**Bug 3 — WiFi AP nao aparecia:**
+- `start_softap_after_init()` chamava `esp_wifi_set_config(AP)` **depois** de `esp_wifi_start()`.
+- ESP-IDF exige config antes de start. Movido `start_softap_after_init()` antes do `esp_wifi_start()`.
+
+**Bug 4 — BLE Mesh segment exhaustion:**
+- `CONFIG_BLE_MESH_TX_SEG_MSG_COUNT` e `RX_SEG_MSG_COUNT` estavam em 4, insuficientes para envio simultâneo de GPS + cell + status.
+- Aumentado para 12 em ambos (ESP32 e K10).
+
+**Bug 5 — YRM100 nao lia tags (STM32):**
+- RX do USART4 era ativado DEPOIS do `YRM100_Init()`, perdendo respostas dos comandos de configuração.
+- Movido `HAL_UART_Receive_IT(&huart4)` para ANTES do init.
+- Trocado continuous read (0x27) para single poll (0x22) a cada 100ms (menos sobrecarga no buffer).
+
+**Bug 6 — STM32006 travando no boot (YRM100_ReportConfig):**
+- `YRM100_ReportConfig()` era chamado após `YRM100_StartContinuousRead()`, mas dados de tag contínuos lotavam o buffer e impediam leitura das respostas dos comandos de configuração.
+- Movido `YRM100_ReportConfig()` para DENTRO do `YRM100_Init()`, ANTES do `StartContinuousRead()`.
+
+### Funcionalidades Adicionadas
+- **Modo de teste YRM100** (`#define YRM100_TEST_MODE`): loop de poll a cada 500ms com dump hex para ESP32.
+- **Report de config YRM100**: STM32 le firmware, região e potência e envia JSON para ESP32 no boot.
+- **Wake da K10 por tag**: `hal_display_reset_inactivity()` chamado no recebimento de RFID via Mesh.
+- **Timeout display K10**: 120s (2 minutos), configurado em `hal_display.c`.
+- **Documentação completa**: `documentacao/` com 6 arquivos (plano, arquitetura, infra, segurança, agentes, roadmap).
+
+### Modificações
+
+**ESP32 (`esp32_firmware/main/main.c`):**
+- Nomes das tasks no array `task_names[]` corrigidos para ≤ 15 chars
+- `xTaskCreatePinnedToCore("system_orchestrator"` → `"sys_orchestr"`
+
+**ESP32 (`esp32_firmware/main/stm32_uart.c`):**
+- `xTaskCreatePinnedToCore("stm32_uart_rx_task"` → `"stm32_uart_rx"`
+- Adicionado handler para `"yrm100_cfg"` e `"yrm100_test"`
+
+**ESP32 (`esp32_firmware/main/simcom_driver.c`):**
+- `simcom_driver_mqtt_publish()`: Adicionado retry loop de 10×300ms para `AT+CMQTTREL=0`
+
+**ESP32 (`esp32_firmware/main/wifi_driver.c`):**
+- `start_softap_after_init()` movido para **antes** de `esp_wifi_start()`
+
+**ESP32 (`esp32_firmware/sdkconfig.defaults` + `sdkconfig`):**
+- `CONFIG_BLE_MESH_TX_SEG_MSG_COUNT=4` → `12`
+- `CONFIG_BLE_MESH_RX_SEG_MSG_COUNT=4` → `12`
+
+**K10 (`k10_firmware/sdkconfig.defaults` + `sdkconfig`):**
+- `CONFIG_BLE_MESH_TX_SEG_MSG_COUNT=4` → `12`
+- `CONFIG_BLE_MESH_RX_SEG_MSG_COUNT=4` → `12`
+
+**STM32 (`stm32_firmware/Core/Src/main.c`):**
+- `HAL_UART_Receive_IT(&huart4)` movido para ANTES de `YRM100_Init()`
+- `YRM100_ReportConfig()` removido (agora dentro de `YRM100_Init()`)
+- Adicionado `YRM100_SinglePoll()` a cada 100ms no loop principal
+- Adicionado `#define YRM100_TEST_MODE` (comentado) para testes
+- Adicionada variável `last_yrm100_poll` e `YRM100_POLL_MS`
+
+**STM32 (`stm32_firmware/Core/Src/rfid_parser.c` + `.h`):**
+- Adicionado `YRM100_ReportConfig()` — lê firmware, região, potência e envia JSON
+- Adicionado `YRM100_ReadFirmwareVersion()`, `YRM100_ReadRegion()`, `YRM100_ReadTXPower()`
+- Adicionado `YRM100_SinglePoll()` — comando 0x22 single inventory
+- Adicionado `YRM100_FlushBuffer()` e `YRM100_ReadRawBuffer()` para diagnóstico
+- Removido `StartContinuousRead()` do init (substituído por single poll)
+
+### Documentação Criada
+- `documentacao/00_Plano_de_Implementacao.md` — Visão geral, stack, fases, pinagem
+- `documentacao/01_Arquitetura_do_Sistema.md` — Fluxo de dados, tasks, protocolos BLE Mesh
+- `documentacao/02_Infraestrutura_e_Docker.md` — Build, deploy, Docker, ambiente
+- `documentacao/03_Multi_Tenancy_e_Seguranca.md` — Criptografia, BLE, MQTT, multi-tenancy
+- `documentacao/04_Agentes_e_Desenvolvimento.md` — Agents, skills, padrões, git
+- `documentacao/08_Roadmap.md` — Cronograma, fases, próximos passos
+- `README.md` atualizado para apontar para `documentacao/`
 
 ---
 

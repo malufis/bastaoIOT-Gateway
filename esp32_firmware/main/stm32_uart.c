@@ -11,11 +11,13 @@
 
 #include "stm32_uart.h"
 #include "stm32_monitor.h"
+#include "ble_mobile.h"
 #include <string.h>
 #include <stdlib.h>
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "freertos/task.h"
 
 static const char *TAG = "STM32_UART";
 
@@ -209,6 +211,36 @@ static void stm32_uart_parse_json(const char *raw_json_str)
             xQueueSend(stm32_data_queue, &received_data, 0);
         }
     }
+    else if (strcmp(type_item->valuestring, "yrm100_cfg") == 0) {
+        // Relatorio de configuracao do leitor UHF YRM100
+        cJSON *fw_item = cJSON_GetObjectItem(json, "fw");
+        cJSON *region_item = cJSON_GetObjectItem(json, "region_name");
+        cJSON *power_item = cJSON_GetObjectItem(json, "power");
+
+        const char *fw_str = (fw_item && cJSON_IsString(fw_item)) ? fw_item->valuestring : "N/A";
+        const char *region_str = (region_item && cJSON_IsString(region_item)) ? region_item->valuestring : "??";
+        int power_val = (power_item && cJSON_IsNumber(power_item)) ? power_item->valueint : -1;
+
+        ESP_LOGI(TAG, "=== YRM100 CONFIG ===");
+        ESP_LOGI(TAG, "  Firmware : %s", fw_str);
+        ESP_LOGI(TAG, "  Regiao   : %s", region_str);
+        ESP_LOGI(TAG, "  Potencia : %d dBm", power_val);
+        ESP_LOGI(TAG, "======================");
+    }
+    else if (strcmp(type_item->valuestring, "yrm100_test") == 0) {
+        // Resultado do teste de leitura do YRM100
+        cJSON *status_item = cJSON_GetObjectItem(json, "status");
+        cJSON *len_item = cJSON_GetObjectItem(json, "len");
+        cJSON *hex_item = cJSON_GetObjectItem(json, "hex");
+
+        if (status_item && cJSON_IsString(status_item) &&
+            strcmp(status_item->valuestring, "no_response") == 0) {
+            ESP_LOGW(TAG, "[YRM100 TEST] SEM RESPOSTA - YRM100 nao respondeu ao comando 0x22");
+        } else if (len_item && cJSON_IsNumber(len_item) && hex_item && cJSON_IsString(hex_item)) {
+            ESP_LOGI(TAG, "[YRM100 TEST] Resposta recebida: %d bytes", len_item->valueint);
+            ESP_LOGI(TAG, "[YRM100 TEST] HEX: %s", hex_item->valuestring);
+        }
+    }
     else {
         ESP_LOGW(TAG, "Tipo JSON nao mapeado no firmware do ESP32: %s", type_item->valuestring);
         stm32_monitor_count_unknown_type();
@@ -228,45 +260,54 @@ static void stm32_uart_parse_json(const char *raw_json_str)
  */
 static void stm32_uart_rx_task(void *pvParameters)
 {
-    // Aloca buffer para acumular caracteres da serial no heap
-    uint8_t *data = (uint8_t *) malloc(STM32_UART_BUF_SIZE);
-    if (data == NULL) {
+    uint8_t *line_buf = (uint8_t *) malloc(STM32_UART_BUF_SIZE);
+    if (line_buf == NULL) {
         ESP_LOGE(TAG, "Falha critica de alocacao de Heap no inicio da Task");
         vTaskDelete(NULL);
         return;
     }
 
-    int len = 0;
-    ESP_LOGI(TAG, "Escuta serial ativada. Aguardando dados do STM32...");
+    uint8_t *chunk = (uint8_t *) malloc(STM32_UART_BUF_SIZE);
+    if (chunk == NULL) {
+        free(line_buf);
+        ESP_LOGE(TAG, "Falha critica de alocacao de chunk");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int line_len = 0;
+    ESP_LOGI(TAG, "Escuta serial ativada (leitura em blocos). Aguardando dados do STM32...");
 
     while (1) {
-        uint8_t byte;
-        // Le um unico caractere com timeout curto de 20ms
-        int rxBytes = uart_read_bytes(STM32_UART_PORT, &byte, 1, 20 / portTICK_PERIOD_MS);
-        
-        if (rxBytes > 0) {
+        int rxBytes = uart_read_bytes(STM32_UART_PORT, chunk, STM32_UART_BUF_SIZE,
+                                      20 / portTICK_PERIOD_MS);
+
+        if (rxBytes <= 0) continue;
+
+        for (int i = 0; i < rxBytes; i++) {
             stm32_monitor_count_byte();
-            // Delimitador de quebra de linha detectado
+            uint8_t byte = chunk[i];
+
             if (byte == '\n' || byte == '\r') {
-                if (len > 0) {
-                    data[len] = '\0'; // Garante terminacao nula para manipulacao de string C
-                    stm32_uart_parse_json((char *)data);
-                    len = 0; // Reseta ponteiro do acumulador
+                if (line_len > 0) {
+                    line_buf[line_len] = '\0';
+                    stm32_uart_parse_json((char *)line_buf);
+                    line_len = 0;
                 }
             } else {
-                // Acumula os bytes no buffer se nao houver estouro de capacidade
-                if (len < STM32_UART_BUF_SIZE - 1) {
-                    data[len++] = byte;
+                if (line_len < STM32_UART_BUF_SIZE - 1) {
+                    line_buf[line_len++] = byte;
                 } else {
-                    ESP_LOGW(TAG, "Estouro de capacidade do buffer serial local. Limpando historico...");
+                    ESP_LOGW(TAG, "Estouro do buffer serial. Limpando...");
                     stm32_monitor_count_buffer_overflow();
-                    len = 0;
+                    line_len = 0;
                 }
             }
         }
     }
 
-    free(data);
+    free(chunk);
+    free(line_buf);
     vTaskDelete(NULL);
 }
 
@@ -313,8 +354,8 @@ esp_err_t stm32_uart_init(void)
 
 BaseType_t stm32_uart_rx_task_start(UBaseType_t priority)
 {
-    // Cria a task FreeRTOS com pilha segura de 4KB para acomodar buffers locais e uso de cJSON
-    return xTaskCreate(stm32_uart_rx_task, "stm32_uart_rx_task", 4096, NULL, priority, NULL);
+    // Cria a task FreeRTOS com pilha segura de 5KB para acomodar buffers locais e uso de cJSON
+    return xTaskCreatePinnedToCore(stm32_uart_rx_task, "stm32_uart_rx", 5120, NULL, priority, NULL, 1);
 }
 
 esp_err_t stm32_uart_send_string(const char *str) {
@@ -352,7 +393,38 @@ uint8_t stm32_uart_is_stm32_alive(void) {
     return 1;
 }
 
+uint8_t stm32_uart_has_ever_been_alive(void) {
+    return stm32_last_heartbeat_tick != 0 ? 1 : 0;
+}
+
 void stm32_uart_watchdog_reset(void) {
     stm32_last_heartbeat_tick = xTaskGetTickCount();
     stm32_watchdog_triggered = 0;
+}
+
+esp_err_t stm32_uart_reset_init(void) {
+    gpio_set_level(STM32_RESET_PIN, 0);
+    gpio_config_t reset_cfg = {
+        .pin_bit_mask = BIT64(STM32_RESET_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    esp_err_t err = gpio_config(&reset_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Falha ao configurar pino de reset STM32 (GPIO%d)", STM32_RESET_PIN);
+        return err;
+    }
+    ESP_LOGI(TAG, "Pino de reset STM32 (GPIO%d) configurado como Push-Pull (inicial LOW)", STM32_RESET_PIN);
+    return ESP_OK;
+}
+
+void stm32_uart_reset_stm32(void) {
+    ESP_LOGW(TAG, ">>> Aplicando pulso de reset no STM32 via GPIO%d (HIGH por 100ms)...", STM32_RESET_PIN);
+    gpio_set_level(STM32_RESET_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    gpio_set_level(STM32_RESET_PIN, 0);
+    ESP_LOGI(TAG, ">>> Pulso de reset concluido. STM32 deve reiniciar.");
+    stm32_uart_watchdog_reset();
 }

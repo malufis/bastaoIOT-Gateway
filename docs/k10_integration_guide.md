@@ -1,142 +1,136 @@
 # Guia de Integração: Bastão-ESP ↔ K10
 
-Este documento descreve as alterações necessárias nos dois repositórios para estabelecer comunicação via BLE Mesh entre o Bastão-ESP e a Tela K10.
+Este documento descreve a integração atual entre o firmware do Bastão-ESP e a Tela K10 via BLE Mesh.
+
+---
+
+## Status da Integração
+
+| Componente | Status | Observação |
+|------------|--------|------------|
+| BLE Mesh Coordinator | ✅ Implementado | CID=0x02A5, AppKey compartilhada, binds assíncronos |
+| BLE Mesh Node (K10) | ✅ Implementado | Provisiona automaticamente pelo coordenador |
+| RFID → K10 | ✅ Funcionando | JSON plain a cada leitura de tag |
+| Bateria → K10 | ✅ Funcionando | JSON plain a cada 5s |
+| GPS → K10 | ✅ Funcionando | A cada 30s, 6 casas decimais |
+| Status Celular → K10 | ✅ Funcionando | A cada 60s, ícone 4G verde/vermelho |
+| Acelerômetro K10 → Coordenador | ✅ Funcionando | A cada 500ms |
+| Status Display K10 → Coordenador | ✅ Funcionando | A cada 30s |
 
 ---
 
 ## Repositórios
 
-| Repositório | URL |
-|-------------|-----|
-| Bastão-ESP | `D:\git\Bastao\Bastão-ESP` |
-| K10 Firmware | `https://github.com/malufis/bastaoIOT` |
+| Firmware | Localização |
+|----------|-------------|
+| Bastão-ESP (Coordenador) | `D:\git\Bastao\Bastao-ESP\esp32_firmware\` |
+| K10 Display | `D:\git\Bastao\Bastao-ESP\k10_firmware\` |
+
+Ambos usam **ESP-IDF v5.4.4** e estão no mesmo repositório.
 
 ---
 
-## 1. Alterações no Bastão-ESP (ESP32)
+## Arquivos Relevantes
 
-### 1.1 Arquivos Existentes
+### Bastão-ESP (Coordenador)
 
-O módulo `mesh_coordinator.c` já está implementado mas precisa de ajustes para BLE Mesh completo:
+| Arquivo | Função |
+|---------|--------|
+| `main/mesh_coordinator.c` | Provisioner BLE Mesh, CID=0x02A5, send/receive |
+| `main/mesh_coordinator.h` | API `mesh_coordinator_init()`, `mesh_coordinator_send_data()` |
+| `main/main.c` | `dispatcher_task` (envia RFID/batt), `system_orchestrator_task` (envia GPS/cell) |
 
-**Arquivo:** `esp32_firmware/main/mesh_coordinator.c`
+### K10 Display
 
-Este arquivo precisa ser expandido para:
-1. Completar inicialização do Provisioner
-2. Implementar envio real de mensagens Mesh
-3. Adicionar whitelist de UUIDs
+| Arquivo | Função |
+|---------|--------|
+| `components/k10_mesh/k10_mesh_node.c` | Node BLE Mesh, parsing JSON, send accel/display |
+| `components/k10_mesh/k10_mesh_node.h` | Structs e API pública |
+| `components/gui/gui_manager.c` | LVGL UI, updates de RFID, GPS, cell status |
+| `components/gui/include/gui_manager.h` | Protótipos das funções de UI |
+| `main/main.c` | `gui_task` (Core 1), `network_task` (Core 0) |
 
-### 1.2 Configuração Necessária
+---
 
-No `sdkconfig` do ESP32, ativar:
+## Protocolo
+
+### Coordenador → K10 (opcode 0xC00001)
+
+| Tipo JSON | Frequência | Campos |
+|-----------|-----------|--------|
+| `{"type":"rfid",...}` | Por evento | model, tag, name, weight, lot, accel |
+| `{"type":"batt",...}` | A cada 5s | volt |
+| `{"type":"gps",...}` | A cada 30s | lat, lon, fix, alt, speed |
+| `{"type":"cell",...}` | A cada 60s | rssi, connected, operator |
+
+### K10 → Coordenador
+
+| Tipo JSON | Opcode | Frequência | Campos |
+|-----------|--------|-----------|--------|
+| `{"type":"accel",...}` | 0xC00002 | 500ms | x, y, z, movement |
+| `{"type":"display",...}` | 0xC00003 | 30s | volt, pct, crit, screen, event |
+
+---
+
+## Detalhes de Implementação
+
+### BLE Mesh CID
+
+**NUNCA use CID=0xFFFF.** O stack ESP-IDF v5.4 usa `CID_NVAL = 0xFFFF` como flag
+interna para indicar modelo SIG. Use `CID=0x02A5` (Espressif).
+
+### Criptografia
+
+BLE Mesh NÃO usa AES-256-CBC entre coordenador e K10. O payload é JSON plain.
+A segurança é garantida pela criptografia de link layer do BLE Mesh (AppKey + NetKey).
+A criptografia AES-256-CBC é exclusiva para o path MQTT (nuvem).
+
+### Provisionamento
+
+- Com `CONFIG_BLE_MESH_SETTINGS=y`, o provisionamento persiste entre reboots na K10
+- Para forçar reprovisionamento: `idf.py erase-flash flash`
+- A ordem dos eventos é: PROV_ENABLE → ADD_LOCAL_APP_KEY → BIND_LOCAL_MODEL
+
+### K10 GUI
+
+- **lbl_gps_coords**: já existe na tela Home, atualizado com dados reais do GPS
+- **icon_4g**: variável global, verde se conectado, vermelho se offline
+- **lbl_bovine_id**: mostra nome do animal ou tag RFID
+- **lbl_farm_title**: texto estático "Fazenda Raptor"
+
+---
+
+## Compilação e Flash
+
+### Coordenador
+```bash
+cd esp32_firmware
+python generate_config.py
+idf.py set-target esp32s3
+idf.py build
+idf.py -p COM7 erase-flash flash monitor
 ```
-CONFIG_BLE_MESH=y
-CONFIG_BLE_MESH_PROVISIONER=y
-CONFIG_BLE_MESH_NODE=y
-CONFIG_BLE_MESH_GENERIC_ONOFF_CLIENT=y
+
+### K10
+```bash
+cd k10_firmware
+idf.py set-target esp32s3
+idf.py build
+idf.py -p COM5 erase-flash flash monitor
 ```
 
 ---
 
-## 2. Alterações na K10
+## Troubleshooting
 
-### 2.1 Novos Arquivos Criados
-
-Для facilitar, foram criados os seguintes arquivos (precisam ser adicionados ao repositório K10):
-
-```
-k10_firmware/components/k10_mesh/
-├── CMakeLists.txt        ✓ (criado)
-├── k10_mesh_node.h       ✓ (criado)
-└── k10_mesh_node.c       ✓ (criado)
-
-k10_firmware/main/
-└── k10_main_updated.c    ✓ (criado - substituir main.c)
-```
-
-### 2.2 Atualização do main.c
-
-O `main.c` precisa ter:
-1. Include do header `k10_mesh_node.h`
-2. Task de rede Mesh fixada no Core 0
-
-### 2.3 Atualização do gui_manager.h
-
-Adicionar funções para receber dados do Mesh:
-- `gui_manager_update_rfid()`
-- `gui_manager_update_battery_mesh()`
-- `gui_manager_show_alert()`
+| Problema | Causa | Solução |
+|----------|-------|---------|
+| K10 mostra "Model not bound" | CID=0xFFFF | Mudar para 0x02A5 e erase-flash |
+| K10 recebe lixo hexadecimal | AES encryption ativada | Enviar JSON plain |
+| K10 não aparece | BLE Mesh desligado | Verificar `CONFIG_BLE_MESH=y` |
+| GPS não atualiza | K10 não reprovisionada | `idf.py erase-flash` na K10 |
 
 ---
 
-## 3. Passos para Implementação
-
-### No Bastão-ESP:
-
-1. Revisar `mesh_coordinator.c` e ativar `CONFIG_BLE_MESH` no sdkconfig
-2. Testar compilação: `idf.py build`
-
-### Na K10:
-
-1. Criar pasta `k10_firmware/components/k10_mesh/`
-2. Adicionar arquivos: `CMakeLists.txt`, `k10_mesh_node.h`, `k10_mesh_node.c`
-3. Atualizar `CMakeLists.txt` principal para incluir o componente k10_mesh
-4. Substituir `main.c` pela versão atualizada
-5. Adicionar funções ao `gui_manager.h/c`
-6. Compilar: `idf.py build`
-
----
-
-## 4. Formato do Payload
-
-Os dados são enviados como JSON criptografado em AES-256-CBC:
-
-```json
-{"type":"rfid","model":"YRM100","tag":"30751FEB705C5904E3D50D70","timestamp":1704067200}
-{"type":"batt","volt":8.45}
-{"type":"alert","code":"batt_critical","volt":7.8}
-```
-
-### Descriptografia na K10
-
-A K10 precisa ter a mesma chave AES-256 do Bastão-ESP para descriptografar.
-
----
-
-## 5. Arquivos de Referência Criados
-
-| Arquivo | Descrição |
-|---------|-----------|
-| `docs/k10_communication_protocol.md` | Protocolo completo de comunicação |
-| `k10_firmware/components/k10_mesh/` | Módulo Mesh para K10 |
-| `k10_firmware/main/k10_main_updated.c` | main.c atualizado |
-| `k10_firmware/components/gui/include/gui_manager_updated.h` | Header atualizado |
-
----
-
-## 6. Próximos Passos
-
-1. **Adicionar arquivos ao repositório K10** - Copiar os arquivos criados para o repositório local da K10
-2. **Compilar e testar** - Verificar se tudo compila corretamente
-3. **Testar comunicação** - Com os dois dispositivos flashados, verificar se os dados aparecem na K10
-
----
-
-## 7. Tabela de Compatibilidade
-
-| Campo | Bastão-ESP (Envio) | K10 (Recebimento) |
-|-------|-------------------|-------------------|
-| `type` | ✅ Implementado | ✅ Parser existente |
-| `model` | ✅ Implementado | ✅ Parser existente |
-| `tag` | ✅ Implementado | ✅ Parser existente |
-| `name` | ✅ (animal_db) | ✅ Parser existente |
-| `weight` | ✅ (animal_db) | ✅ Parser existente |
-| `lot` | ✅ (animal_db) | ✅ Parser existente |
-| `batt/volt` | ✅ Implementado | ✅ Parser existente |
-| `alert` | ✅ Implementado | ✅ Parser existente |
-
----
-
-*Documento gerado em: 2026-05-20*
-*Versão: 1.0*
-*Projeto: Bastão-ESP ↔ K10 Integration*
+*Documento atualizado em: 2026-06-17*
+*Versão: 2.0*

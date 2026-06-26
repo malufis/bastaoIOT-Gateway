@@ -1,249 +1,658 @@
-# Documentação do Projeto: Sistema Bastão-ESP
+# Sistema Bastao — Rastreabilidade Pecuária com RFID e GPS
 
-## 1. Visão Geral
-Este projeto consiste em um sistema de sensoriamento e conectividade baseado em uma arquitetura de múltiplos microcontroladores (ESP32 e STM32) para leitura de tags RFID, processamento de dados e transmissão para nuvem e endpoints locais.
+## Visão Geral
 
-## 2. Arquitetura de Hardware
+O **Sistema Bastao** é um dispositivo de rastreamento pecuário que integra leitura de tags RFID (LF/UHF), GPS/GNSS multi-constelação, conectividade celular 4G e comunicação BLE Mesh com display K10. Projetado para operar em áreas rurais sem infraestrutura de rede Wi-Fi.
 
-### 2.1. Módulo de Sensoriamento (STM32G070CBTx)
-Responsável por toda a interface física com os sensores e gerenciamento de energia.
-- **Microcontrolador:** STM32G070CBTx.
-- **Periféricos:**
-  - **USART3 (PA5/PB0):** Interface com Leitor RFID WL-134 (9600 bps, 8N2).
-  - **USART1 (PA9/PA10):** Não Utilizada / Reservada.
-  - **USART2 (PA2/PA3):** Interface de comunicação com o ESP32 (UART TTL).
-  - **USART4 (PA0/PA1):** Interface com Leitor RFID YRM100 (115200 bps, 8N1).
-  - **ADC1 (PB1/IN9):** Monitoramento de tensão da bateria (Divisor resistivo: R1=100k, R2=10k).
-  - **GPIO Output (PB4):** Controle de energia do WL-134 (High=On).
-  - **GPIO Output (PB5):** Controle de energia do YRM100 (High=On).
+## Hardware
 
-### 2.2. Módulo de Conectividade (ESP32)
-Responsável pela lógica de rede, criptografia e integração com a nuvem.
-- **Microcontrolador:** ESP32 (usando ESP-IDF v5.x e FreeRTOS).
-- **Conectividade Local:** BLE MESH (Bluetooth Low Energy Mesh).
-  - **Papel:** Coordenador/Provisionador.
-  - **Endpoint:** Tela K10.
-  - **Segurança:** Provisionamento fechado via Whitelist de UUIDs e chaves OOB fixas.
-- **Conectividade Nuvem:** SIMCom 7663E (4G/LTE + GPS) operando em interface PPP.
-  - **Suporte Dual SIM:** Suporte a dois slots de chips SIM (Slot 0 e Slot 1) gerenciados via software. No boot, realiza uma varredura automática (sonda Slot 0 e falls back para o Slot 1) para validar a presença (`AT+CPIN?`) e extrair o identificador do chip (`AT+CCID`).
-  - **Interface:** UART (Pinos 17 e 18).
-  - **Mapeamento de Sinais e Erros Celulares:** Coleta de métricas avançadas RSRP, RSRQ, SINR (via `AT+CPSI?`) e logs estendidos de falha de conexão (via `AT+CEER`). Os valores são lidos ativamente offline e cacheados quando o PPP está ativo (evitando comandos AT concorrentes na interface de dados) e expostos na característica GATT 0xFF06.
-  - **Motor de SMS de Contingência:** Quando offline (conexão de dados inativa), o watchdog celular monitora o recebimento de SMS. Suporta a execução de comandos remotos (`BUZZER`, `RFID [ON/OFF]`, `STATUS`, `RESTART`) e responde ao remetente com tensão da bateria, status da rede, slot SIM ativo, CCID e coordenadas de GPS com fix.
-  - **Subscrição de Configuração Remota:** O Bastão-ESP se inscreve no tópico MQTT `id/<ID>/config` após conectar-se ao Broker. Quando um novo JSON de rede, MQTT ou hardware é recebido no tópico, ele é processado via `ble_mobile_process_config_json` e gravado de forma persistente no NVS.
-- **Orquestração de Redundância de Rede:**
-  - Máquina de estados centralizada (`manage_connectivity`) que atua com base nos modos de conectividade (Wi-Fi Only, Cellular Only, e Wi-Fi & Cellular/Auto).
-  - Se configurada em modo redundante (Auto), suspende a interface celular PPP quando o Wi-Fi possui um IP ativo (para economizar dados), e reativa a interface PPP celular imediatamente se o Wi-Fi desconectar.
-  - O driver de Wi-Fi STA foi modificado para não realizar conexões incessantes em loop ao sofrer desconexão, evitando varreduras de rádio contínuas que causam timeout e derrubam o link celular 4G ativo. As varreduras de segundo plano do Wi-Fi são espaçadas a cada 60 segundos enquanto o 4G é mantido estável.
-- **Interface com STM32:** UART (IO13-RX / IO14-TX) conectada à USART2 (PA2-TX / PA3-RX) do STM32. Conforme o esquema [esquematico_placa.pdf](file:///d:/git/Bastao/Bastão-ESP/Manual/esquematico_placa.pdf).
-  - **Protocolo de Rede:** PPP (Point-to-Point Protocol) para ativação de dados.
-  - **Aplicação:** Cliente MQTT operando sobre a pilha PPP.
-- **Localização:** GPS/GLONASS via SIMCom 7663E.
-
-## 3. Protocolos de Comunicação
-
-### 3.1. RFID YRM100 (UHF)
-- **Protocolo de Frame:**
-  - Header: `0xBB`
-  - Type: `0x00` (Cmd), `0x01` (Resp), `0x02` (Notice)
-  - Checksum: Soma simples do byte Type até o último byte de parâmetro.
-  - End: `0x7E`
-
-### 3.2. RFID WL-134 (Animal Tag - 134.2KHz)
-- **Protocolo de Frame (ASCII):**
-  - Start: `0x02`
-  - Data: 10 bytes HEX do cartão + 4 bytes país + flags.
-  - End: `0x03`
-
-### 3.3. Mensageria e Segurança
-- **Formato de Dados:** JSON.
-- **Criptografia:** AES-256-CBC com IV aleatório de 16 bytes via hardware RNG do ESP32.
-  - Formato do payload hex: `hex(IV 16B) + hex(ciphertext)` — IV prefixado.
-  - Padding: PKCS#7 (128-bit blocks).
-  - Compatível com `crypto.py` do sistemaBastao (`descriptografar_frame`).
-- **MQTT:** Configurações e comandos trafegam via MQTT criptografado.
-  - **Broker:** `209.50.240.55:1883` (sistemaBastao EMQX).
-  - **Topico de telemetria:** `agro/bastao/{MAC}/telemetry` (MAC do ESP32 = numero_serie).
-  - **Topico de comandos:** `id/{MAC}/cmd` (subscribe para comandos remotos).
-  - **Topico de config:** `id/{MAC}/config` (subscribe para config remota).
-  - **Autenticacao:** Username = MAC, Password = chave AES hex (gerados dinamicamente).
-  - **Keepalive:** 60 segundos.
-- **Payload MQTT (sistemaBastao):** Campos `id_brinco`, `latitude`, `longitude`, `nivel_bateria`, `timestamp_rtc`.
-- **Payload BLE Mesh (K10):** Campos `type`, `model`, `tag`, `name`, `weight`, `lot` (formato legado mantido).
-
-## 4. Estrutura do Projeto
-- `/stm32_firmware`: Projeto STM32CubeIDE contendo o firmware de sensoriamento.
-- `/esp32_firmware`: Projeto ESP-IDF contendo o firmware de conectividade.
-- `/docs`: Manuais tecnicos e documentacao adicional.
-- `.opencode/skills/`: Skills de desenvolvimento do OpenCode (contexto injetado sob demanda).
-
-## 5. Skills de Desenvolvimento
-O projeto utiliza skills do OpenCode para auxiliar no desenvolvimento e manutencao eficiente:
-
-| Skill | Pasta | Escopo |
-|--------|-------|--------|
-| `stm32-firmware` | `.opencode/skills/stm32-firmware` | Firmware STM32G070CBTx (sensores, RFID, ADC) |
-| `esp32-connectivity` | `.opencode/skills/esp32-connectivity` | Conectividade ESP32 (Mesh, MQTT, BLE, OTA) |
-| `simcom-7663e` | `.opencode/skills/simcom-7663e` | Modem celular SIMCom 7663E (4G, GPS, PPP) |
-| `c-best-practices` | `.opencode/skills/c-best-practices` | Padroes de codigo C (ESP32 e STM32) |
-| `testing` | `.opencode/skills/testing` | Testes automatizados e validacao |
-| `k10-firmware` | `.opencode/skills/k10-firmware` | Firmware K10 (LVGL, BLE Mesh Node, sensores) |
-| `security-crypto` | `.opencode/skills/security-crypto` | Seguranca e criptografia (AES, BLE, MQTT) |
-| `project-management` | `.opencode/skills/project-management` | Gestao de projeto, roadmap, planejamento |
-| `sistema-backend` | `.opencode/skills/sistema-backend` | Backend sistemaBastao (FastAPI, MQTT, PostgreSQL) |
-| `frontend-react` | `.opencode/skills/frontend-react` | Frontend React SPA e App Mobile Expo |
-
-## 6. Agentes de Desenvolvimento
-O projeto utiliza agents do OpenCode para desenvolvimento focado em cada componente:
-
-| Agente | Arquivo | Escopo |
-|--------|---------|--------|
-| `documenter` | `.opencode/agents/documenter.md` | Documentacao, docstrings, AGENTS.md |
-| `esp32-firmware-agent` | `.opencode/agents/esp32-firmware-agent.md` | Firmware ESP32 (conectividade, BLE, MQTT, OTA) |
-| `stm32-firmware-agent` | `.opencode/agents/stm32-firmware-agent.md` | Firmware STM32 (RFID, ADC, power mgmt) |
-| `k10-firmware-agent` | `.opencode/agents/k10-firmware-agent.md` | Firmware K10 (display LVGL, BLE Mesh node) |
-| `testing-agent` | `.opencode/agents/testing-agent.md` | Automacao de testes e validacao |
-| `reviewer-agent` | `.opencode/agents/reviewer-agent.md` | Revisao de codigo e qualidade |
-| `architect-agent` | `.opencode/agents/architect-agent.md` | Arquitetura geral e decisoes tecnicas |
-| `sistema-bastao-agent` | `.opencode/agents/sistema-bastao-agent.md` | Backend sistemaBastao (API, receptor, agentes) |
-| `frontend-mobile-agent` | `.opencode/agents/frontend-mobile-agent.md` | Frontend web React e App Mobile Expo |
-
-## 7. Fluxo de Operação
-1. O STM32 ativa a energia dos módulos RFID.
-2. Ao detectar uma tag, o STM32 faz o parsing do UUID e envia para o ESP32 via UART.
-3. O ESP32 empacota a UUID, dados de bateria e localização (GPS) em um JSON.
-4. O payload é criptografado com AES.
-5. O dado é enviado para a Tela K10 via BLE Mesh e para a nuvem via MQTT (4G).
-
-## 8. Pipeline de Dados (Fase 28 - Integração sistemaBastao)
-
-### 8.1. Fluxo Completo
+### Arquitetura Física
 
 ```
-STM32 (RFID Tag)
-  │
-  ├── UART ──> ESP32 (stm32_uart_rx_task)
-  │              │
-  │              ├── DATA_TYPE_RFID ──> animal_db_lookup() ──> JSON enriquecido
-  │              │
-  │              ├── dispatcher_task
-  │              │    ├── JSON p/ BLE Mesh (K10): type, model, tag, name, weight, lot
-  │              │    └── JSON p/ MQTT (sistemaBastao): id_brinco, lat, lon, batt, timestamp
-  │              │
-  │              ├── secure_payload_encrypt()
-  │              │    ├── IV aleatório (16 bytes via esp_fill_random)
-  │              │    ├── AES-256-CBC + PKCS#7
-  │              │    └── output: hex(IV) + hex(ciphertext)
-  │              │
-  │              ├── mesh_coordinator_send_data() ──> K10
-  │              │
-  │              └── mqtt_publisher_enqueue() ──> ESP-MQTT Client
-  │                                                   │
-  │                                                   ├── Keepalive: 60s
-  │                                                   ├── Auth: MAC / AES key hex
-  │                                                   │
-  │                                           ┌───────▼────────┐
-  │                                           │  EMQX 5.7.1    │
-  │                                           │  209.50.240.55 │
-  │                                           └───────┬────────┘
-  │                                                   │
-  │                                           ┌───────▼────────┐
-  │                                           │  Receptor      │
-  │                                           │  Daemon        │
-  │                                           │  ThreadPool(4) │
-  │                                           └───────┬────────┘
-  │                                                   │
-  │                                           ┌───────▼────────┐
-  │                                           │  PostgreSQL    │
-  │                                           │  + PostGIS     │
-  │                                           │  + Blockchain  │
-  │                                           └────────────────┘
++---------------------+         UART2 (115200 8N1)        +---------------------+
+|   STM32G070CBTx     |  PA2(TX) -> IO13(ESP32 RX)      |       ESP32-S3      |
+|  (Sensing Hub)      |  PA3(RX) <- IO14(ESP32 TX)      |  (Connectivity Hub) |
+|                     |  JSON sobre serial               |                     |
+|  - WL-134 (LF RFID) |                                   |  - BLE Mesh (K10)   |
+|  - YRM100 (UHF RFID)|                                   |  - BLE GATT (Mobile) |
+|  - Bateria ADC (PB1)|                                   |  - SIMCom 7663E     |
+|  - Buzzer (PB6)     |                                   |                     |
++---------------------+                                   +---------+-----------+
+                                                                     |
+                                                              UART2 (17/18, 115200)
+                                                                     |
+                                                          +----------v-----------+
+                                                          |  SIMCom 7663E       |
+                                                          |  4G/LTE Cat1        |
+                                                          |  GPS/GLONASS/BDS/Gal|
+                                                          |  Dual SIM (DSSS)    |
+                                                          |  MQTT Nativo (AT)   |
+                                                          |  Modem 7663E        |
+                                                          +----------------------+
 ```
 
-### 8.2. Payload MQTT (sistemaBastao)
+### Componentes Principais
 
-```json
-{
-  "id_brinco": "30751FEB705C5904E3D50D70",
-  "latitude": -23.55052,
-  "longitude": -46.633308,
-  "nivel_bateria": 8.45,
-  "timestamp_rtc": "2026-06-11T12:00:00Z"
-}
+| Componente | Função | Interface |
+|-----------|--------|-----------|
+| **STM32G070CBTx** | Leitor RFID, ADC bateria, buzzer | UART + GPIO |
+| **ESP32-S3** | Conectividade, criptografia, orquestração | UART, BLE, SPI |
+| **SIMCom 7663E** | Modem 4G + GPS/GNSS multi-constelação | UART AT commands |
+| **WL-134** | Leitor RFID LF (134.2KHz) | UART 9600 8N2 |
+| **YRM100** | Leitor RFID UHF | UART 115200 8N1 |
+| **K10** | Display e interação | BLE Mesh |
+
+### Pinagem STM32
+
+| Pino | Periférico | Função |
+|------|-----------|--------|
+| PB1 (ADC1 IN9) | ADC | Medição bateria (divisor 100k/10k) |
+| PA2/PA3 | USART2 | Comunicação com ESP32 (115200) |
+| PA0/PA1 | USART4 | YRM100 UHF RFID (115200) |
+| PA5/PB0 | USART3 | WL-134 LF RFID (9600 8N2) |
+| PB4/PB5 | GPIO | Power control WL-134 / YRM100 |
+| PB6 | GPIO | Buzzer |
+
+### Pinagem ESP32
+
+| GPIO | Conectado a | Direção | Função |
+|------|------------|---------|--------|
+| IO13 | STM32 PA2 (TX) | RX | UART1 RX do STM32 |
+| IO14 | STM32 PA3 (RX) | TX | UART1 TX para STM32 |
+| IO17 | SIMCom TX | TX | UART2 TX para modem |
+| IO18 | SIMCom RX | RX | UART2 RX do modem |
+| IO4 | SIMCom PWRKEY | OUT | Pulso de boot do modem |
+| IO19 | Transistor NPN → NRST | OUT | Reset do STM32 (lógica invertida) |
+
+### Reset Circuit (STM32)
+
 ```
-
-### 8.3. Payload BLE Mesh (K10 - mantido)
-
-```json
-{
-  "type": "rfid",
-  "model": "YRM100",
-  "tag": "30751FEB705C5904E3D50D70",
-  "name": "Vaca 001",
-  "weight": 450.5,
-  "lot": "Lote A"
-}
+GPIO19 (ESP32) ---> NPN Transistor ---> NRST (STM32)
+  LOW  -> Transistor OFF -> NRST HIGH (pull-up) -> STM32 roda
+  HIGH -> Transistor ON  -> NRST LOW           -> STM32 reset
 ```
-
-## 9. Sistema de Configuração Centralizada
-
-### 9.1. Arquivo Único de Config
-
-Todas as configurações do firmware do ESP32 são definidas em:
-
-```
-esp32_firmware/private_configs.env
-```
-
-| Variável | Descrição | Exemplo |
-|----------|-----------|---------|
-| `BASTAO_MQTT_URI` | URI do broker MQTT | `mqtt://209.50.240.55:1883` |
-| `BASTAO_MQTT_CLIENT_ID` | Client ID MQTT | `bastao-esp-001` |
-| `BASTAO_WIFI_SSID` | SSID Wi-Fi (fallback) | `""` (vazio = desligado) |
-| `BASTAO_WIFI_PASS` | Senha Wi-Fi | `""` |
-| `BASTAO_WIFI_ENABLED` | Habilitar Wi-Fi | `false` |
-| `BASTAO_APN_NAME` | APN do chip 4G | `iot.datatem.com.br` |
-| `BASTAO_APN_USER` | Usuário APN | `datatem` |
-| `BASTAO_APN_PASS` | Senha APN | `datatem` |
-| `BASTAO_CELL_ENABLED` | Habilitar 4G | `true` |
-| `BASTAO_AES_KEY` | Chave AES-256 em hex (64 chars) | `0123...` |
-| `BASTAO_NET_MODE` | Modo de rede | `auto`, `wifi_only`, `cellular_only` |
-
-### 9.2. Gerador de Config
-
-```bash
-cd esp32_firmware
-python generate_config.py          # Lê .env e gera main/private_configs.h
-idf.py build                       # Compila com a config gerada
-```
-
-### 9.3. Credenciais MQTT Dinâmicas
-
-Username e password MQTT **não são configurados no .env** — são gerados em runtime:
-- **Username:** MAC do ESP32 (ex: `206EF1D4D574`)
-- **Password:** Chave AES em hexadecimal (64 chars)
-- Motivo: Compatibilidade com a tabela `mqtt_usuarios` do sistemaBastao.
-
-## 10. TEST CODE — Loop de Injeção RFID
-
-> ⚠ **ATENÇÃO:** Este é um recurso temporário para validação do pipeline.
-> Deve ser **removido** antes da produção.
-
-O firmware possui um loop de injeção automática de RFID fictício
-ativado pela flag `test_loop_enabled` em `main.c`:
-
-- Disparo inicial: imediatamente após conexão MQTT.
-- Repetições: a cada **5 minutos** (300 segundos).
-- Tag enviada: `BRINCO_INTEGRACAO_001`.
-- Logs marcados com `[TESTE]` para fácil identificação.
-
-**Localização no código:** `main.c` — loop principal `while(1)`, bloco comentado
-com `TEST CODE`. Remover a variável `test_loop_enabled` e o bloco de injeção.
-
-## 11. Referências Técnicas
-Os manuais originais com os protocolos completos estão localizados na raiz do projeto:
-
-- **YRM100 UHF Reader:** [Communication user Protocol V2.1_en.docx](file:///d:/git/Bastao/Bast%C3%A3o-ESP/Communication%20user%20Protocol%20V2.1_en.docx)
-- **WL-134 Animal Tag Reader:** [RFID reader module.pdf](file:///d:/git/Bastao/Bast%C3%A3o-ESP/RFID%20reader%20module.pdf)
 
 ---
-*Nota: Esta documentação foi gerada automaticamente e deve ser atualizada conforme o progresso da implementação.*
+
+## Firmware ESP32
+
+### Stack de Conectividade (AT Commands)
+
+O sistema utiliza **comandos AT puros** para toda comunicação com o modem SIMCom 7663E. **Não utiliza PPP** nem pilha TCP/IP do ESP-IDF para o caminho celular.
+
+```
++------------------+       +------------------+       +------------------+
+|  ESP32 Tasks     |       |  SIMCom 7663E    |       |     Broker       |
+|                  |  AT   |                  |  TCP  |                  |
+| dispatcher_task  |──────►│ AT+CMQTTSTART    |──────►│ MQTT Broker     |
+| simcom_watchdog  |◄──────│ +CMQTTCONNECT:0  │◄──────│ :1883           |
+| simcom_rx_task   |       │                  |       |                  |
+|                  |       │ AT+CGNSSPWR=1    |       |                  |
+| system_loop      |       │ AT+CGNSSINFO     |  GPS  |                  |
++------------------+       +------------------+       +------------------+
+```
+
+### FreeRTOS Tasks
+
+| Task | Arquivo | Core | Prio | Stack | Função |
+|------|---------|------|------|-------|--------|
+| `stm32_uart_rx_task` | `stm32_uart.c` | 0 | 7 | 4096 | RX UART STM32, parse JSON |
+| `dispatcher_task` | `main.c` | 0 | 6 | 6144 | Processa RFID, criptografa, publica |
+| `main_loop` | `main.c` | 0 | 5 | - | Conectividade, GPS, heartbeat |
+| `simcom_rx` | `simcom_driver.c` | 1 | 5 | 4096 | RX UART modem, URC parsing |
+| `simcom_watchdog` | `simcom_driver.c` | 1 | 3 | 6144 | Watchdog SIMCom, SIM swap |
+| `cache_sync` | `offline_cache.c` | 1 | 3 | 4096 | Sincronização cache offline |
+
+### Fluxo de Dados (Tag RFID → Nuvem)
+
+```
+STM32 (Tag detectada)
+  │
+  ├── WL-134 (USART3, 9600) ──┐
+  ├── YRM100 (USART4, 115200) ─┤
+  │                            v
+  │                    STM32 rfid_parser.c
+  │                    JSON: {"type":"rfid","model":"YRM100","tag":"..."}
+  │                            │
+  │                    USART2 (115200)
+  │                            v
+  │                    ESP32 stm32_uart_rx_task
+  │                    JSON parse → queue (50 slots)
+  │                            │
+  │                    dispatcher_task
+  │                      ├── rfid_dedup_is_duplicate()
+  │                      ├── animal_db_lookup() (nome, peso, lote)
+  │                      ├── AES-256-CBC encrypt (secure_payload)
+  │                      ├── mesh_coordinator_send_data() → K10
+  │                      └── CELLULAR_ONLY?
+  │                           ├── sim → simcom_driver_mqtt_publish()
+  │                           └── não → mqtt_publisher_enqueue() → WiFi
+  │                                    │
+  │                                    v
+  │                              Broker MQTT
+  │                          agro/bastao/{MAC}/telemetry
+```
+
+### Módulos do Firmware ESP32
+
+| Arquivo | Função |
+|---------|--------|
+| `main.c` | Orquestrador, dispatcher, manage_connectivity |
+| `simcom_driver.c` | Driver SIMCom via AT commands, GPS, MQTT, SMS |
+| `simcom_driver.h` | Header com structs e funções públicas |
+| `stm32_uart.c` | UART STM32, JSON parser, watchdog |
+| `stm32_cmd.c` | Comandos para STM32 (buzzer, RFID power) |
+| `stm32_monitor.c` | Dashboard de saúde do STM32 |
+| `mqtt_publisher.c` | MQTT via WiFi (esp_mqtt) - opcional |
+| `wifi_driver.c` | Wi-Fi STA (só em modo WIFI ou AUTO) |
+| `offline_cache.c` | Cache offline SPIFFS (FIFO) |
+| `rfid_dedup.c` | Deduplicação RFID (64 entradas, 10s) |
+| `secure_payload.c` | Criptografia AES-256-CBC |
+| `ble_mobile.c` | GATT Server BLE para app mobile |
+| `ble_mobile.h` | Structs: bastao_device_status_t, network_config_t |
+| `mesh_coordinator.c` | Coordenador BLE Mesh |
+| `esp_power.c` | Gerenciamento de energia (light/deep sleep) |
+| `cmd_parser.c` | Parse de comandos remotos (MQTT/BLE) |
+| `animal_db.c` | Banco de dados de animais (NVS) |
+| `private_configs.h` | Configurações (gerado do .env) |
+
+### Configuração (`private_configs.env` → `generate_config.py` → `private_configs.h`)
+
+| Variável | Padrão | Descrição |
+|----------|--------|-----------|
+| `BASTAO_MQTT_URI` | `mqtt://209.50.240.55:1883` | Broker MQTT |
+| `BASTAO_MQTT_CLIENT_ID` | `bastao-esp-001` | Client ID |
+| `BASTAO_APN_NAME` | `iot.datatem.com.br` | APN 4G |
+| `BASTAO_APN_USER` | `datatem` | Usuário APN |
+| `BASTAO_APN_PASS` | `datatem` | Senha APN |
+| `BASTAO_AES_KEY` | 64 hex chars | Chave AES-256 |
+| `BASTAO_NET_MODE` | `cellular_only` | Modo de rede |
+| `BASTAO_TOPIC_TELEMETRY` | `agro/bastao/{MAC}/telemetry` | Tópico telemetria |
+| `BASTAO_TOPIC_GPS` | `agro/bastao/{MAC}/gps` | Tópico GPS |
+| `BASTAO_WIFI_ENABLED` | `false` | Wi-Fi habilitado |
+
+---
+
+## Conexão Celular (SIMCom 7663E)
+
+### Sequência de Inicialização
+
+```
+Boot:
+  1. PWRKEY pulse (GPIO4 HIGH 2s) + aguarda 10s
+  2. Cria task simcom_rx (UART escuta)
+  3. at_init_sequence():
+     a. AT (teste, 5s timeout)
+     b. ATE1 (eco ativo)
+     c. AT+UIMHOTSWAPLEVEL + AT+UIMHOTSWAPON
+     d. Sonda slot 0: CFUN=0 → SELECTSIMSLOT=0 → CFUN=1 → CPIN? → CCID → CSQ
+     e. Sonda slot 1: CFUN=0 → SELECTSIMSLOT=1 → CFUN=1 → CPIN? → CCID → CSQ
+     f. Escolhe slot com melhor sinal (rssi)
+     g. IMEI + MSISDN
+     h. CREG=1, CGREG=1
+  4. simcom_driver_configure_apn():
+     a. wait_for_network_registration (60s timeout)
+     b. CGATT=1, CGDCONT, CGAUTH
+     c. Lê operadora (COPS) e sinal (CSQ)
+  5. simcom_driver_mqtt_connect():
+     a. CMQTTREL + CMQTTSTOP (cleanup sessão anterior)
+     b. Delay 1s
+     c. CMQTTSTART, CMQTTACCQ
+     d. CMQTTWILLTOPIC + CMQTTWILLMSG
+     e. CMQTTCONNECT (30s + 15s URC)
+     f. SUBSCRIBE cmd + config (com delay 1s entre)
+  6. GPS ligado (CGNSSPWR=1)
+  7. Watchdog task inicia
+```
+
+### Comandos AT Principais
+
+#### Inicialização
+| Comando | Função | Timeout |
+|---------|--------|---------|
+| `AT` | Teste básico | 5s |
+| `ATE1` | Eco ativo (debug) | 5s |
+| `AT+CFUN=0` | Rádio off | 5s |
+| `AT+CFUN=1` | Rádio on | 5s |
+| `AT+CFUN=1,1` | Reset modem | 10s |
+| `AT*SELECTSIMSLOT=<0\|1>` | Seleciona SIM (proprietário) | 5s |
+| `AT+CPIN?` | Verifica SIM pronto | 5s |
+| `AT+CICCID` | Lê ICCID | 5s |
+| `AT+GSN` | Lê IMEI | 5s |
+| `AT+CNUM` | Lê MSISDN | 9s |
+| `AT+CREG=1` / `AT+CGREG=1` | URC de registro | 3s |
+| `AT+CREG?` | Status registro | 3s |
+
+#### Rede
+| Comando | Função | Timeout |
+|---------|--------|---------|
+| `AT+CGATT=1` | GPRS attach | 10s |
+| `AT+CGDCONT=1,"IP","<APN>"` | PDP context | 9s |
+| `AT+CGAUTH=1,1,"user","pass"` | Autenticação PAP | 9s |
+| `AT+COPS?` | Operadora atual | **65s** |
+| `AT+CSQ` | Qualidade sinal | 9s |
+| `AT+CPSI?` | Info sistema | 5s |
+
+#### MQTT (SIMCom Nativo)
+| Comando | Função | Timeout |
+|---------|--------|---------|
+| `AT+CMQTTSTART` | Inicia MQTT | 15s |
+| `AT+CMQTTACCQ=0,"<id>"` | Adquire client ID | 5s |
+| `AT+CMQTTWILLTOPIC=0,<len>` | Will topic | 5s |
+| `AT+CMQTTWILLMSG=0,<len>,1` | Will message | 5s |
+| `AT+CMQTTCONNECT=0,"tcp://..."` | Conecta broker | 30s |
+| `AT+CMQTTSUBTOPIC=0,<len>,1` | Subscribe topic | 5s |
+| `AT+CMQTTSUB=0` | Executa subscribe | 5s |
+| `AT+CMQTTTOPIC=0,<len>` | Publish topic | 5s |
+| `AT+CMQTTPAYLOAD=0,<len>` | Publish payload | 5s |
+| `AT+CMQTTPUB=0,<qos>,60` | Executa publish | 10s |
+| `AT+CMQTTDISC=0,120` | Desconecta | 5s |
+| `AT+CMQTTREL=0` | Libera client | 3s |
+| `AT+CMQTTSTOP` | Para MQTT | 15s |
+
+#### GPS/GNSS
+| Comando | Função | Timeout |
+|---------|--------|---------|
+| `AT+CGNSSPWR=1` | Liga GNSS | 9s |
+| `AT+CGNSSPWR=0` | Desliga GNSS | 9s |
+| `AT+CGPSINFO` | Posição GPS (NMEA DDMM.MMMM) | 9s |
+| `AT+CGNSSINFO` | Posição GNSS (formato variável) | 9s |
+
+#### SMS
+| Comando | Função | Timeout |
+|---------|--------|---------|
+| `AT+CMGF=1` | Modo texto | 3s |
+| `AT+CMGS="<num>"` | Enviar SMS | 5s prompt / **40s envio** |
+| `AT+CMGL="REC UNREAD"` | Listar SMS | 9s |
+| `AT+CMGD=<index>` | Deletar SMS | 9s |
+
+### URCs (Unsolicited Result Codes)
+
+| URC | Tratamento | Função |
+|-----|-----------|--------|
+| `+CMQTTCONNECT:<idx>,<err>` | ✅ `process_simcom_line()` | Resultado conexão MQTT |
+| `+CMQTTCONNLOST:<idx>,<cause>` | ✅ | Conexão MQTT perdida |
+| `+CMQTTNONET` | ✅ | Rede indisponível |
+| `+CMQTTRXSTART:<idx>,<t_len>,<p_len>` | ✅ | Início mensagem recebida |
+| `+CMQTTRXTOPIC:<idx>,<sub_t_len>` + dados | ✅ | Tópico da mensagem |
+| `+CMQTTRXPAYLOAD:<idx>,<sub_p_len>` + dados | ✅ | Payload da mensagem |
+| `+CMQTTRXEND:<idx>` | ✅ | Fim mensagem (processa) |
+| `+CGNSSPWR:READY!` | ⚠️ Logado mas não tratado | GNSS pronto |
+| `+CREG:<stat>` | ⚠️ Não tratado como URC | Mudança de registro |
+
+## Sincronização de Horário
+
+### Fonte única: Torre Celular (AT+CCLK)
+
+O sistema **não utiliza SNTP** (NTP) porque o ESP32 não tem interface IP própria — o modem gerencia todo o TCP/IP internamente.
+
+A sincronização é feita exclusivamente via torre celular:
+
+```c
+// No orchestrator_task, a cada ~30s enquanto hora < 2023
+if (time(NULL) < 1700000000 && simcom_driver_get_state() >= SIMCOM_STATE_REGISTERED) {
+    simcom_driver_sync_time_from_tower();
+}
+```
+
+### Comando AT+CCLK?
+
+```
+AT+CCLK? → +CCLK: "26/06/16,08:32:59-16"
+```
+
+O campo `-16` é o timezone em **quarter-hours** (3GPP TS 27.007):
+- `-16` = 16 × 15min = **4 horas** = GMT-4
+- `-12` = 12 × 15min = **3 horas** = GMT-3
+
+### Conversão
+
+```
+Torre: 08:32:59-16 → GMT-4 (08:32 AM)
+tz_h = 16 → 16 × 900s = 4h
+UTC = 08:32 + 4h = 12:32 UTC
+TZ=AMT+4 → localtime: 12:32 - 4h = 08:32 GMT-4 ✅
+```
+
+### Timezone (TZ)
+
+Configurado no boot para AMT+4 (America/Manaus, GMT-4):
+```c
+setenv("TZ", "AMT+4", 1);
+tzset();
+```
+
+Usado nos formatos de timestamp com `%z`:
+```c
+strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%dT%H:%M:%S%z", tm_info);
+// Resultado: 2026-06-16T08:32:59-0400
+```
+
+---
+
+### Sondagem na inicialização
+O `at_init_sequence()` sonda ambos os slots e escolhe o de melhor sinal:
+
+```
+Sonda slot 0: CFUN=0 → SELECTSIMSLOT=0 → CFUN=1 → CPIN? → CCID → CSQ
+Sonda slot 1: CFUN=0 → SELECTSIMSLOT=1 → CFUN=1 → CPIN? → CCID → CSQ
+Compara:
+  - Ambos OK: escolhe o de maior RSSI (> menos negativo)
+  - Só um OK: usa esse
+  - Nenhum: fallback slot 0
+```
+
+### Troca inteligente (watchdog)
+O watchdog (`simcom_watchdog_task`) troca de chip automaticamente quando:
+- SIM ausente (`sim_present == false`) → troca imediata
+- Sinal < -100dBm por 5 ciclos (50s) → troca
+- MQTT desconectado por 180s + sem sinal → power cycle + troca
+
+### NVS Persistence
+Dados SIM salvos na NVS para recall no próximo boot:
+
+| Chave | Conteúdo |
+|-------|----------|
+| `sim_imei` | IMEI do módulo |
+| `sim0_msisdn` | Número slot 0 |
+| `sim1_msisdn` | Número slot 1 |
+| `sim0_ccid` | ICCID slot 0 |
+| `sim0_oper` | Operadora slot 0 |
+| `sim1_oper` | Operadora slot 1 |
+
+---
+
+## GPS/GNSS
+
+### Funcionamento
+- GNSS ligado no boot (`AT+CGNSSPWR=1`)
+- Polling a cada **30s** pelo `system_orchestrator_task`
+- Prioridade: **CGPSINFO** (NMEA DDMM.MMMM → decimal) com fallback CGNSSINFO
+- GPS fix tracking com `bastao_current_status.gps_fix`
+
+### Formato CGPSINFO (PRIMÁRIO - funciona)
+```
++CGPSINFO: 2027.588218,S,05434.803006,W,150626,202805.000,502.08,0.290,0.00
+lat=DDMM.MMMMMM → DD + MM.MMMMMM/60 = decimal
+```
+
+### Formato CGNSSINFO (FALLBACK - ASR1601)
+```
++CGNSSINFO: 3,07,04,20.4597855,S,54.5801010,W,...
+fix, GPS_SVs, GLO_SVs, lat, N/S, lon, E/W, ...
+```
+
+---
+
+## MQTT
+
+### Rotas de Publicação
+
+```
+CELLULAR_ONLY:
+  dispatcher_task → simcom_driver_mqtt_publish(topic, payload, qos)
+                   → AT+CMQTTTOPIC → AT+CMQTTPAYLOAD → AT+CMQTTPUB
+
+WIFI/AUTO (WiFi ativo):
+  dispatcher_task → mqtt_publisher_enqueue(topic, payload, qos)
+                   → esp_mqtt_client_publish()
+```
+
+### Tópicos
+
+| Tópico | Direção | Conteúdo |
+|--------|---------|----------|
+| `agro/bastao/{MAC}/telemetry` | Publish | RFID + GPS + bateria (criptografado AES) |
+| `agro/bastao/{MAC}/gps` | Publish | Coordenadas GPS (reservado) |
+| `id/{MAC}/cmd` | Subscribe | Comandos remotos |
+| `id/{MAC}/config` | Subscribe | Configuração remota |
+
+### Autenticação
+- **Username**: MAC address (ex: `206EF1D4D574`)
+- **Password**: Chave AES-256 em hex (64 chars)
+- Enviados via `AT+CMQTTCONNECT`
+
+---
+
+## Atualização OTA (Over-the-Air)
+
+### Visão Geral
+
+O Sistema Bastão suporta atualização remota de firmware via OTA exclusivamente para o **ESP32 Coordenador**. O processo utiliza o componente `esp_https_ota` da ESP-IDF com partições duplas A/B (`ota_0`/`ota_1`) para garantir rollback seguro.
+
+### Arquitetura de Partições
+
+```
+Partitions (ESP32 Coordinator):
+  nvs       (24KB)  → Dados não voláteis
+  otadata   (8KB)   → Estado do boot (qual partição bootar)
+  ota_0     (1728K) → Slot de firmware A (ativo)
+  ota_1     (1728K) → Slot de firmware B (inativo)
+  spiffs    (512K)  → Cache offline
+```
+
+- O boot alterna entre `ota_0` e `ota_1` a cada OTA bem-sucedido.
+- `esp_ota_mark_app_valid_cancel_rollback()` é chamado no boot para confirmar que o firmware é estável.
+
+### Disparo
+
+A atualização é disparada por comando MQTT no tópico `id/{MAC}/cmd`:
+
+```json
+{"cmd":"ota","url":"https://servidor-firmware.com/bastao_v2.0.bin"}
+```
+
+### Fluxo de Execução
+
+1. Cloud envia comando OTA → MQTT → `cmd_parser_process_message()` → `ota_manager_start(url)`
+2. `ota_manager_start()` cria `ota_task` (prio 4, Core 1, stack 8KB)
+3. `ota_task` verifica se Wi-Fi está ativo (`esp_netif_is_netif_up()`)
+4. Se Wi-Fi ativo: baixa binário via `esp_https_ota()`, grava na partição inativa
+5. Se sucesso: `esp_restart()` após 3s
+6. Se falha: loga erro, mantém firmware atual
+
+### Limitações Conhecidas
+
+| Limitação | Detalhe | Impacto |
+|-----------|---------|---------|
+| **Wi-Fi apenas** | `esp_https_ota` exige pilha TCP/IP LwIP. Modo CELLULAR_ONLY não tem interface IP local. | OTA não funciona via 4G. Necessário Wi-Fi (base carregadora/curral). |
+| **Sem CI/CD** | Não há pipeline automatizado para build + upload do `.bin`. | O arquivo binário precisa ser gerado manualmente e hospedado em servidor HTTPS. |
+| **Sem report de progresso** | `ota_task` não publica status (iniciando, baixando, erro, sucesso) de volta ao MQTT. | Cloud não sabe se OTA começou ou falhou. |
+| **Sem FOTA do modem** | Comandos `AT+CFOTA` do SIMCom não implementados. | Firmware do módulo 4G só atualiza via porta serial. |
+| **Sem OTA na K10** | K10 tem partição `factory` única, sem slots OTA. | Display K10 só atualiza via USB/serial físico. |
+
+### Servidor de Firmware
+
+O binário deve ser hospedado em servidor **HTTPS** com certificado SSL válido (o ESP32 usa `esp_crt_bundle_attach` para verificação). Exemplos:
+
+- Servidor HTTP estático (Nginx, Apache, S3)
+- GitHub Releases (https://github.com/user/repo/releases/download/vX.Y.Z/bastao.bin)
+- Servidor dedicado na fazenda (rede local)
+
+### Geração do Binário
+
+```bash
+# Na raiz do esp32_firmware:
+idf.py build
+# O arquivo de firmware está em:
+# build/bastao_esp_coordinator.bin  (ou esp32_firmware/build/*.bin)
+#
+# Para uso com OTA, o binário correto é:
+# build/ota_data_initial.bin  (apenas primeira gravação)
+# O firmware completo está em esp32_firmware/build/bastao_esp_coordinator.bin
+```
+
+### Teste
+
+```bash
+python teste_automatizado/verify_ota.py
+# Valida que o parser de comando {"cmd":"ota","url":"..."} funciona.
+```
+
+---
+
+## Energia e Sleep
+
+### STM32
+- Sleep timeout: **120s** sem atividade
+- Wake: UART activity (qualquer uma das 3 UARTs com stop mode habilitado)
+- RFID readers desligados durante sleep
+- Envia `{"type":"power","action":"sleep"}` para ESP32 antes de dormir
+- Ao acordar: rearma `HAL_UART_Receive_IT` para todas as UARTs
+
+### Ciclo de Sleep/Wake
+
+```
+1. 120s sem atividade → STM32 Power_Sleep()
+2. STM32 envia "power sleep" JSON ao ESP32
+3. STM32 desliga RFID readers
+4. STM32 entra STOP1 (WFI), UART2/3/4 com wake habilitado
+5. ESP32 recebe "power sleep" → seta stm32_sleeping=true
+6. A cada 30s, ESP32 envia "\n" via UART para wake
+7. STM32 acorda → reconfigura clock → religa readers → envia "power wake"
+8. ESP32 recebe "power wake" → stm32_sleeping=false
+```
+
+### ESP32
+- Light sleep timeout: **180s** (maior que STM32 para não perder mensagens de sleep)
+- Wake: timer, GPIO ou UART
+- Watchdog do STM32 envia `\n` periódico quando `stm32_sleeping=true` (não reseta)
+
+---
+
+## Cache Offline (SPIFFS)
+
+### Funcionamento
+- Armazenamento FIFO em SPIFFS (`/spiffs/msg_N.json`)
+- Capacidade máxima: 95% do SPIFFS
+- Tópico utilizado: **`bastao_network_config.mqtt.topic_telemetry`** (com MAC real)
+
+### Fluxo
+```
+dispatcher: publish → falhou? → offline_cache_write(payload) ✅
+sync_task (a cada 5s): MQTT conectado? → lê cache → publica no tópico correto
+```
+
+### Importante
+O tópico usado na sincronização é o **mesmo** do dispatcher ao vivo: `agro/bastao/{MAC}/telemetry`. Antes da correção, o sync task usava tópicos hardcoded sem MAC. ✅
+
+---
+
+## Comunicação BLE Mesh (Tela K10)
+
+O **Coordenador (ESP32)** e a **Tela K10** se se comunicam via rede local **BLE Mesh** usando a stack Bluedroid do ESP-IDF. A segurança da comunicação local é garantida nativamente pela criptografia da camada de link do BLE Mesh (AppKey + NetKey), trafegando payloads JSON em texto plano (sem encriptação AES-256-CBC redundante).
+
+### Configuração do Vendor Model
+Para evitar conflito com constantes internas do ESP-IDF (como `CID_NVAL = 0xFFFF` para modelos SIG), o projeto utiliza Company Identifier (CID) e Model Identifier (MID) personalizados:
+- **Company ID (CID):** `0x02A5` (Espressif)
+- **Model ID (MID):** `0x0001`
+- **Opcodes do Vendor Model:**
+  - `OP_RFID` (`0xC00001`): Coordenador → K10 (Leitura RFID / Telemetria)
+  - `OP_ACCEL` (`0xC00002`): K10 → Coordenador (Dados do acelerômetro)
+  - `OP_DISPLAY_STATUS` (`0xC00003`): K10 → Coordenador (Bateria, tela ativa, eventos UI)
+
+### Capacidade de Segmentos (Segment Exhaustion Fix)
+Para evitar falhas na fila de transmissão e erros de contextos de segmentos insuficientes (`err=-16` / "No multi-segment message contexts available") sob pacotes BLE de múltiplos segmentos, a configuração de filas concorrentes foi expandida de 1 para 4 em ambos os projetos (`sdkconfig.defaults`):
+```ini
+CONFIG_BLE_MESH_TX_SEG_MSG_COUNT=4
+CONFIG_BLE_MESH_RX_SEG_MSG_COUNT=4
+```
+
+### Formato de Payloads (Coordenador → K10)
+A comunicação trafega payloads estruturados em formato JSON simples:
+
+1. **Mensagem de Leitura RFID (Tag lida no STM32):**
+   ```json
+   {"type":"rfid","model":"YRM100","tag":"982000211311029","name":"Mimoso","weight":450.50,"lot":"Lote A"}
+   ```
+2. **Mensagem de GPS (Enviado a cada 30 segundos):**
+   ```json
+   {"type":"gps","lat":-20.449785,"lon":-54.580101,"fix":1,"alt":502.1,"speed":0.5}
+   ```
+3. **Mensagem de Status Celular (Enviado a cada 60 segundos):**
+   ```json
+   {"type":"cell","rssi":-75,"connected":1,"operator":"Vivo"}
+   ```
+4. **Mensagem de Status Geral (Enviado a cada 30 segundos):**
+   ```json
+   {"type":"status","rfid_conn":1,"wifi_active":1}
+   ```
+   Indica se as antenas RFID controladas pelo STM32 estão operacionais (`rfid_conn`) e se o modo de rede do Coordenador possui suporte a Wi-Fi/Dual (`wifi_active`).
+
+### Exibição de Ícones Dinâmicos na Tela K10
+Os ícones do cabeçalho superior da K10 atualizam-se dinamicamente conforme os status recebidos:
+- **RFID:** Inicia em vermelho no boot e só fica verde se o STM32 reportar heartbeat ativo (`rfid_conn == 1`).
+- **WiFi:** Ocultado no boot; só é exibido na tela se o modo de rede ativo no Coordenador for Wi-Fi ou Dual/Auto (`wifi_active == 1`).
+- **4G:** Ocultado no boot; fica visível em verde exibindo a potência do sinal (ex: `"4G -85dBm"`) quando o modem celular estiver conectado. É ocultado sob perda de sinal.
+- **GPS:** Mostra `"GPS NÃO SINCRONIZADO"` em vermelho no boot ou quando não houver sinal (`fix == 0`). O ícone e a coordenada só ficam verdes ao obter fixação.
+
+### Desacoplamento de Bateria (K10 Battery Source Shift)
+- A leitura de bateria do STM32 é ignorada pelo Coordenador para evitar loops beeps de alarmes errados.
+- A bateria da tela K10 (0-100%) passa a ser a única fonte oficial para o payload MQTT da nuvem (`nivel_bateria`).
+- O Coordenador sincroniza seu status de bateria interna utilizando a leitura enviada pela K10 (`OP_DISPLAY_STATUS`).
+
+### Sincronismo Imediato de Sensores (RFID Scan Roundtrip)
+Para garantir que os dados de bateria e acelerômetro enviados à nuvem no momento exato do scan de um animal estejam atualizados:
+1. Ao receber a tag RFID via BLE Mesh (`OP_RFID`), a Tela K10 imediatamente lê o acelerômetro e a bateria locais e os envia de volta para o Coordenador.
+2. O Coordenador, após encaminhar a tag para a Mesh, realiza um atraso controlado de `300ms` (`vTaskDelay`) antes de gerar o payload MQTT. Isso fornece a janela de tempo necessária para a recepção dos sensores atualizados.
+
+### Persistência de Rede e Reconexão (NVS)
+Para evitar perda de comunicação após desligamento ou reinicialização (onde o Coordenador esquecia os nós e o K10 parava de enviar beacons de pareamento por se considerar já pareado):
+1. **Configuração NVS:** Ambos os firmwares compilam com a persistência de configurações habilitada:
+   ```ini
+   CONFIG_BLE_MESH_SETTINGS=y
+   ```
+2. **Restauração de Estado:** Durante a inicialização do Coordenador, logo após o bind do modelo local, o banco de dados do provisionador no NVS é verificado na faixa de endereços reservados (`0x0005` a `0x0010`):
+   ```c
+   for (uint16_t addr = 0x0005; addr < 0x0010; addr++) {
+       esp_ble_mesh_node_t *node = esp_ble_mesh_provisioner_get_node_with_addr(addr);
+       if (node != NULL) {
+           k10_addr = addr;
+           k10_provisioned = true;
+           break;
+       }
+   }
+   ```
+   Caso o nó seja encontrado na tabela interna, a comunicação é restabelecida instantaneamente no boot sem necessidade de novo pareamento físico.
+
+---
+
+## Segurança
+
+### Criptografia
+- Algoritmo: **AES-256-CBC** com PKCS#7 padding
+- Chave: 32 bytes (64 hex chars) do `private_configs.env`
+- IV: Gerado aleatoriamente a cada payload
+- Payloads MQTT e Mesh criptografados antes do envio
+
+### BLE
+- Autenticação obrigatória para escrita em características sensíveis
+- GATT server com UUIDs personalizados
+
+---
+
+## Compilação
+
+### STM32
+```bash
+# No Windows com STM32CubeCLT + Make
+cd stm32_firmware
+make -j4
+```
+
+### ESP32
+```bash
+# Requer ESP-IDF v5.5.2
+cd esp32_firmware
+pip install -r requirements.txt
+python generate_config.py          # Atualiza private_configs.h
+idf.py set-target esp32s3
+idf.py build
+idf.py -p COMx flash monitor
+```
+
+### Dependências
+- ESP-IDF v5.5.2
+- Python 3.9+
+- ARM GCC toolchain (para STM32)
+- CMake + Ninja

@@ -104,17 +104,31 @@ void Alerts_ProcessCommand(const char* json) {
         }
     }
 
+    /* Comando: {"cmd":"yrm_tx_power","value":20} - ajusta potencia TX do YRM100 */
     if (strstr(json, "\"cmd\"") != NULL && strstr(json, "\"yrm_tx_power\"") != NULL) {
-        int dbm = 26;
-        char *v = strstr(json, "\"value\":");
-        if (v) {
-            v += 8;
-            dbm = atoi(v);
+        const char *val = strstr(json, "\"value\":");
+        if (val != NULL) {
+            val += 8; // pula "value":"
+            int dbm = 0;
+            while (*val >= '0' && *val <= '9') {
+                dbm = dbm * 10 + (*val - '0');
+                val++;
+            }
+            if (dbm >= 0 && dbm <= 33) {
+                // Para o inventario, ajusta potencia, reinicia
+                YRM100_StopContinuousRead();
+                YRM100_SetTXPower((uint8_t)dbm);
+                YRM100_StartContinuousRead();
+            }
         }
-        if (dbm < 1) dbm = 1;
-        if (dbm > 33) dbm = 33;
-        YRM100_SetTXPower((uint8_t)dbm);
     }
+
+    /* Comando: {"cmd":"yrm_restart"} - reinicia o leitor YRM100 */
+    if (strstr(json, "\"cmd\"") != NULL && strstr(json, "\"yrm_restart\"") != NULL) {
+        YRM100_StopContinuousRead();
+        YRM100_Init();
+    }
+
 }
 
 void Buzzer_Play(uint8_t pattern) {

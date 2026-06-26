@@ -18,7 +18,7 @@
 #include "nvs_flash.h"
 #include "cJSON.h"
 #include "wifi_driver.h"
-#include "simcom_ppp.h"
+#include "simcom_driver.h"
 #include "mqtt_publisher.h"
 #include "secure_payload.h"
 #include "private_configs.h"
@@ -36,7 +36,7 @@ static const char *TAG = "BLE_MOBILE";
 /* --- Definicao de Variaveis Globais --- */
 
 bastao_config_t bastao_current_config = {
-    .yrm100_power = 20,
+    .yrm100_power = 26,
     .scan_time_ms = 200,
     .battery_report_interval_s = 5,
     .wl134_enabled = true,
@@ -59,7 +59,7 @@ network_config_t bastao_network_config = {
     .mqtt.client_id = PRIVATE_MQTT_CLIENT_ID,
     .mqtt.topic_telemetry = PRIVATE_MQTT_TOPIC_TELE,
     .mqtt.topic_gps = PRIVATE_MQTT_TOPIC_GPS,
-    .mode = NETWORK_MODE_AUTO,
+    .mode = NETWORK_MODE_CELLULAR_ONLY,
 };
 
 /* --- Variaveis Estaticas --- */
@@ -293,11 +293,15 @@ static void save_business_data_to_nvs(const char *json_str) {
  */
 static void format_device_status_json(char *buf, size_t buf_size) {
     snprintf(buf, buf_size,
-             "{\"batt\":%.2f,\"ppp\":%s,\"mqtt\":%s,\"mesh\":%s,"
+             "{\"batt\":%.2f,\"cell_mqtt\":%s,\"mqtt\":%s,\"mesh\":%s,"
              "\"gps\":%s,\"lat\":%.6f,\"lon\":%.6f,\"tags\":%lu,"
-             "\"sim_slot\":%d,\"sim_present\":%s,\"sim_id\":\"%s\"}",
+             "\"sim_slot\":%d,\"sim_present\":%s,\"sim_id\":\"%s\","
+             "\"sim_imei\":\"%s\",\"sim_msisdn0\":\"%s\",\"sim_msisdn1\":\"%s\","
+             "\"sim_oper0\":\"%s\",\"sim_oper1\":\"%s\","
+             "\"sim_rssi0\":%d,\"sim_rssi1\":%d,"
+             "\"k10_batt\":%.2f,\"k10_pct\":%u,\"k10_crit\":%u,\"k10_screen\":%u}",
              bastao_current_status.battery_voltage,
-             bastao_current_status.ppp_connected ? "true" : "false",
+             bastao_current_status.cellular_connected ? "true" : "false",
              bastao_current_status.mqtt_connected ? "true" : "false",
              bastao_current_status.mesh_active ? "true" : "false",
              bastao_current_status.gps_fix ? "true" : "false",
@@ -306,7 +310,18 @@ static void format_device_status_json(char *buf, size_t buf_size) {
              (unsigned long)bastao_current_status.tags_read_count,
              bastao_current_status.active_sim_slot,
              bastao_current_status.sim_present ? "true" : "false",
-             bastao_current_status.sim_ccid);
+             bastao_current_status.sim_ccid,
+             bastao_current_status.sim_imei,
+             bastao_current_status.sim_msisdn[0],
+             bastao_current_status.sim_msisdn[1],
+             bastao_current_status.sim_operator[0],
+             bastao_current_status.sim_operator[1],
+             bastao_current_status.sim_rssi[0],
+             bastao_current_status.sim_rssi[1],
+             bastao_current_status.k10_battery_voltage,
+             bastao_current_status.k10_battery_percentage,
+             bastao_current_status.k10_battery_critical,
+             bastao_current_status.k10_screen_active);
 }
 
 /**
@@ -319,7 +334,7 @@ static void format_cellular_status_json(char *buf, size_t buf_size) {
     cellular_status_t cell_status;
     memset(&cell_status, 0, sizeof(cell_status));
 
-    if (simcom_ppp_get_status(&cell_status) == ESP_OK) {
+    if (simcom_driver_get_status(&cell_status) == ESP_OK) {
         const char *tech_str = "UNKNOWN";
         switch (cell_status.tech) {
             case CELLULAR_TECH_2G: tech_str = "2G"; break;
@@ -333,13 +348,13 @@ static void format_cellular_status_json(char *buf, size_t buf_size) {
         snprintf(buf, buf_size,
                  "{\"rssi_dbm\":%d,\"ber\":%d,\"tech\":\"%s\","
                  "\"mcc\":%d,\"mnc\":%d,\"op\":\"%s\","
-                 "\"reg\":%s,\"roam\":%s,\"ppp\":%s,"
+                 "\"reg\":%s,\"roam\":%s,\"cell_mqtt\":%s,"
                  "\"rsrp\":%d,\"rsrq\":%d,\"sinr\":%d,\"ceer\":\"%s\"}",
                  cell_status.rssi, cell_status.ber, tech_str,
                  cell_status.mcc, cell_status.mnc, cell_status.operator_name,
                  cell_status.registered ? "true" : "false",
                  cell_status.roaming ? "true" : "false",
-                 cell_status.modem_state == SIMCOM_STATE_PPP_ACTIVE ? "true" : "false",
+                 cell_status.modem_state == SIMCOM_STATE_MQTT_CONNECTED ? "true" : "false",
                  cell_status.rsrp, cell_status.rsrq, cell_status.sinr, cell_status.ceer);
     } else {
         snprintf(buf, buf_size, "{\"error\":\"modem_unavailable\"}");
@@ -788,6 +803,59 @@ esp_err_t ble_mobile_save_network_config(const network_config_t *config) {
     return err;
 }
 
+esp_err_t ble_mobile_save_sim_data(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE_CONFIG, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+
+    nvs_set_str(handle, NVS_KEY_SIM_IMEI, bastao_current_status.sim_imei);
+    nvs_set_str(handle, NVS_KEY_SIM0_MSISDN, bastao_current_status.sim_msisdn[0]);
+    nvs_set_str(handle, NVS_KEY_SIM1_MSISDN, bastao_current_status.sim_msisdn[1]);
+    nvs_set_str(handle, NVS_KEY_SIM0_CCID, bastao_current_status.sim_ccid);
+    nvs_set_str(handle, NVS_KEY_SIM1_CCID, "");  // CCID do outro slot via probe futuro
+    nvs_set_str(handle, NVS_KEY_SIM0_OPERATOR, bastao_current_status.sim_operator[0]);
+    nvs_set_str(handle, NVS_KEY_SIM1_OPERATOR, bastao_current_status.sim_operator[1]);
+
+    err = nvs_commit(handle);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Dados SIM salvos na NVS: IMEI=%s, msisdn[0]=%s",
+                 bastao_current_status.sim_imei, bastao_current_status.sim_msisdn[0]);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t ble_mobile_load_sim_data(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE_CONFIG, NVS_READONLY, &handle);
+    if (err != ESP_OK) return err;
+
+    size_t len;
+    len = sizeof(bastao_current_status.sim_imei);
+    nvs_get_str(handle, NVS_KEY_SIM_IMEI, bastao_current_status.sim_imei, &len);
+
+    len = sizeof(bastao_current_status.sim_msisdn[0]);
+    nvs_get_str(handle, NVS_KEY_SIM0_MSISDN, bastao_current_status.sim_msisdn[0], &len);
+
+    len = sizeof(bastao_current_status.sim_msisdn[1]);
+    nvs_get_str(handle, NVS_KEY_SIM1_MSISDN, bastao_current_status.sim_msisdn[1], &len);
+
+    len = sizeof(bastao_current_status.sim_operator[0]);
+    nvs_get_str(handle, NVS_KEY_SIM0_OPERATOR, bastao_current_status.sim_operator[0], &len);
+
+    len = sizeof(bastao_current_status.sim_operator[1]);
+    nvs_get_str(handle, NVS_KEY_SIM1_OPERATOR, bastao_current_status.sim_operator[1], &len);
+
+    if (bastao_current_status.sim_imei[0] != '\0') {
+        ESP_LOGI(TAG, "Dados SIM carregados da NVS: IMEI=%s, msisdn[0]=%s, msisdn[1]=%s",
+                 bastao_current_status.sim_imei,
+                 bastao_current_status.sim_msisdn[0],
+                 bastao_current_status.sim_msisdn[1]);
+    }
+    nvs_close(handle);
+    return ESP_OK;
+}
+
 esp_err_t ble_mobile_process_network_json(const char *json) {
     if (json == NULL || strlen(json) == 0) {
         return ESP_ERR_INVALID_ARG;
@@ -968,7 +1036,7 @@ esp_err_t ble_mobile_apply_network_config(void) {
         strncpy(apn.apn, bastao_network_config.cellular.apn, sizeof(apn.apn) - 1);
         strncpy(apn.user, bastao_network_config.cellular.user, sizeof(apn.user) - 1);
         strncpy(apn.password, bastao_network_config.cellular.password, sizeof(apn.password) - 1);
-        simcom_ppp_configure_apn(&apn);
+        simcom_driver_configure_apn(&apn);
     }
 
     // APLICAR CONFIGURACOES MQTT

@@ -1,7 +1,7 @@
 ---
 name: esp32-idf-agent
 description: >
-  Agente de desenvolvimento e depuracao de firmware ESP32 usando ESP-IDF v5.5.2
+  Agente de desenvolvimento e depuracao de firmware ESP32 usando ESP-IDF v5.4.4
   para o projeto Bastao. Cobre a ordem correta de inicializacao do sistema,
   padroes de codigo C, depuracao de crashes via backtrace, gestao de NVS,
   BLE, Wi-Fi, PPP e FreeRTOS Tasks.

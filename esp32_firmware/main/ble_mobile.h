@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-#include "simcom_ppp.h"
+#include "simcom_driver.h"
 
 /* --- Definicoes de UUIDs do Servico GATT --- */
 
@@ -71,6 +71,13 @@ extern "C" {
 #define NVS_KEY_NETWORK_MODE     "net_mode"
 #define NVS_KEY_BIZ_JSON         "biz_json"
 #define NVS_KEY_CFG_JSON        "cfg_json"
+#define NVS_KEY_SIM_IMEI         "sim_imei"
+#define NVS_KEY_SIM0_MSISDN      "sim0_msisdn"
+#define NVS_KEY_SIM1_MSISDN      "sim1_msisdn"
+#define NVS_KEY_SIM0_CCID        "sim0_ccid"
+#define NVS_KEY_SIM1_CCID        "sim1_ccid"
+#define NVS_KEY_SIM0_OPERATOR    "sim0_oper"
+#define NVS_KEY_SIM1_OPERATOR    "sim1_oper"
 
 /* --- Estruturas de Dados --- */
 
@@ -90,7 +97,7 @@ typedef struct {
  */
 typedef struct {
     float battery_voltage;
-    bool ppp_connected;
+    bool cellular_connected; /**< Conectividade celular MQTT ativa */
     bool mqtt_connected;
     bool mesh_active;
     bool gps_fix;
@@ -104,7 +111,17 @@ typedef struct {
     bool sim_present;        /**< Flag de presenca do chip SIM */
     int active_sim_slot;     /**< Slot de chip ativo (0 ou 1) */
     char sim_ccid[32];       /**< Identificador unico do chip SIM (ICCID) */
+    char sim_imei[32];       /**< IMEI do modulo celular */
+    char sim_msisdn[2][20];  /**< Numero de telefone do slot 0 e 1 */
+    char sim_operator[2][32];/**< Operadora detectada por slot */
+    int sim_rssi[2];         /**< Ultimo RSSI (dBm) por slot */
     bool stm32_alive;        /**< STM32 responsivo (heartbeat recebido) */
+    /* --- Dados recebidos da K10 (BLE Mesh) --- */
+    float k10_battery_voltage;       /**< Tensao da bateria da K10 */
+    uint8_t k10_battery_percentage;  /**< Porcentagem da bateria da K10 */
+    uint8_t k10_battery_critical;    /**< Bateria K10 em nivel critico */
+    uint8_t k10_screen_active;       /**< Tela K10 ativa/acesa */
+    uint8_t k10_battery_valid;       /**< Dados de bateria K10 atualizados */
 } bastao_device_status_t;
 
 /**
@@ -301,6 +318,18 @@ void ble_mobile_log_enable(bool enable);
  * @return true se logging BLE esta ativo.
  */
 bool ble_mobile_log_is_enabled(void);
+
+/**
+ * @brief Salva dados dos chips SIM (IMEI, MSISDN, ICCID) na NVS.
+ * @return esp_err_t ESP_OK se salvo com sucesso.
+ */
+esp_err_t ble_mobile_save_sim_data(void);
+
+/**
+ * @brief Carrega dados dos chips SIM da NVS para o status.
+ * @return esp_err_t ESP_OK se carregou dados.
+ */
+esp_err_t ble_mobile_load_sim_data(void);
 
 #ifdef __cplusplus
 }

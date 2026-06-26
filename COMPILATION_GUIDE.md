@@ -1,188 +1,296 @@
-# Guia de Compilação do Projeto Bastão-ESP
+# Guia de Compilação — Sistema Bastao
 
-Este guia orienta a configuração do ambiente e a compilação do firmware para os módulos do projeto Bastão-ESP.
+## Pré-requisitos
+
+### STM32 Firmware
+- **STM32CubeCLT** (GNU Tools for STM32 12.3.rel1)
+- **Make** (GNU Make 4.x)
+- **ARM GCC Toolchain** (`arm-none-eabi-gcc`)
+
+### ESP32 Coordinator Firmware
+- **ESP-IDF v5.4.4** (Espressif IoT Development Framework)
+- **Python 3.9+**
+- **CMake** + **Ninja**
+- **Git**
+
+### K10 Display Firmware
+- **ESP-IDF v5.4.4** (mesmo ambiente do coordinator)
+- **LVGL** (biblioteca gráfica, inclusa)
+- **Componentes:** LCD ILI9341, touch FT6236, acelerômetro SC7A20
 
 ---
 
-## 1. Configuração do Ambiente ESP-IDF (Recomendado v5.5.2)
+## 1. Configuração Inicial
 
-Para garantir a compatibilidade de APIs, drivers de rede (PPP/LwIP) e correto gerenciamento de memória, este projeto foi validado utilizando o **ESP-IDF v5.5.2**.
+### 1.1 Gerar `private_configs.h`
 
-### Requisitos do compilador (Toolchain)
-O compilador obrigatório e homologado para esta versão do ESP-IDF é:
-- **xtensa-esp-elf GCC versão:** `esp-14.2.0_20251107`
+O arquivo `main/private_configs.h` é **automaticamente gerado** a partir de `private_configs.env`:
 
-Se outra versão da toolchain estiver ativa no seu ambiente, a compilação falhará com erro de verificação de versão (`tool_version_check.cmake`).
-
-### Configuração no Windows (PowerShell / CMD)
-Você pode usar o instalador online do ESP-IDF para obter a v5.5.2:
-1. Baixe o instalador de: [Espressif Downloads](https://dl.espressif.com/dl/esp-idf/)
-2. Instale o ESP-IDF v5.5.2 no diretório padrão (ex: `C:\Espressif\frameworks\esp-idf-v5.5.2`).
-3. O projeto fornece um script automatizado [compile_v5.5.bat](file:///D:/git/Bastao/Bastao-ESP/esp32_firmware/compile_v5.5.bat) que já configura os caminhos do compilador e as variáveis de ambiente locais antes de chamar a compilação.
-
-### Configuração no Linux/Mac (Bash)
 ```bash
-# 1. Clone o ESP-IDF na versão v5.5.2
-git clone -b v5.5.2 --recursive https://github.com/espressif/esp-idf.git C:/esp/esp-idf-v5.5.2
-cd C:/esp/esp-idf-v5.5.2
+cd esp32_firmware
+python generate_config.py
+```
 
-# 2. Instale dependências e a toolchain
-./install.sh
+Isso lê as variáveis do `.env` e gera os defines C. **Sempre execute após alterar o `.env`.**
 
-# 3. Ative o ambiente no terminal atual
-source export.sh
+### 1.2 Arquivo `.env`
+
+Edite `private_configs.env` com as configurações do seu dispositivo:
+
+```env
+# Broker MQTT
+BASTAO_MQTT_URI=mqtt://209.50.240.55:1883
+BASTAO_MQTT_CLIENT_ID=bastao-esp-001
+
+# APN 4G
+BASTAO_APN_NAME=iot.datatem.com.br
+BASTAO_APN_USER=datatem
+BASTAO_APN_PASS=datatem
+
+# AES Key (64 hex chars - 32 bytes)
+BASTAO_AES_KEY=0123456789ABCDEFFEDCBA98765432101032547698BADCFEEFCDAB8967452301
+
+# Modo de Rede: auto | wifi_only | cellular_only
+BASTAO_NET_MODE=cellular_only
+
+# Wi-Fi (opcional, fallback)
+BASTAO_WIFI_SSID=
+BASTAO_WIFI_PASS=
+BASTAO_WIFI_ENABLED=false
+
+# Tópicos MQTT ({MAC} substituído automaticamente pelo MAC real)
+BASTAO_TOPIC_TELEMETRY=agro/bastao/{MAC}/telemetry
+BASTAO_TOPIC_GPS=agro/bastao/{MAC}/gps
 ```
 
 ---
 
-## 2. Compilação do ESP32 (Bastão-ESP)
+## 2. Compilar STM32
 
-O firmware do ESP32 reside no diretório [esp32_firmware/](file:///D:/git/Bastao/Bastao-ESP/esp32_firmware).
+```bash
+cd stm32_firmware/Debug
 
-### Compilação Automatizada (Windows)
-A maneira recomendada de compilar no Windows é usar o script local do projeto:
-```powershell
-# Acesse a pasta do firmware
-cd D:\git\Bastao\Bastao-ESP\esp32_firmware
+# Compilar (usa makefile gerado pelo STM32CubeIDE)
+make -j4
 
-# Execute o compilador
-.\compile_v5.5.bat
+# Saída: bastao-Stm32.elf
 ```
-Este script define as variáveis de ambiente corretas, aponta para a pasta da toolchain `esp-14.2.0_20251107` e executa o comando `idf.py build`.
 
-### Compilação Manual (Linha de Comando)
-Caso as variáveis já estejam exportadas no seu terminal:
+**Limpar build:**
+```bash
+make clean
+```
+
+**Gravando:**
+- Use STM32CubeProgrammer para gravar o `.elf` ou `.hex`
+- Conecte via SWD (ST-Link) ou UART (DFU mode)
+
+---
+
+## 3. Compilar ESP32
+
+### 3.1 Configurar ESP-IDF
+
+```bash
+# No Windows (PowerShell):
+C:\Espressif\frameworks\esp-idf-v5.4.4\export.ps1
+
+# Ou defina manualmente:
+$env:IDF_PATH = "C:\Espressif\frameworks\esp-idf-v5.5.2"
+```
+
+### 3.2 Gerar config + Build
+
 ```bash
 cd esp32_firmware
 
-# Define o chip de destino (caso seja a primeira build)
+# 1. Gerar private_configs.h (sempre que alterar .env)
+python generate_config.py
+
+# 2. Configurar target (primeira vez apenas)
 idf.py set-target esp32s3
 
-# Compila o firmware
+# 3. Limpar build anterior (se necessário)
+idf.py fullclean
+
+# 4. Compilar
 idf.py build
 
-# Grava o firmware na porta serial (substitua COM7 pela sua porta física)
-idf.py -p COM7 flash
+# 5. Gravar e monitorar
+idf.py -p COMx flash monitor
 
-# Abre o monitor de logs serial
-idf.py -p COM7 monitor
+# Para sair do monitor: Ctrl+]
+```
+
+### 3.3 Configurações do sdkconfig
+
+Principais opções:
+```
+CONFIG_LWIP_PPP_SUPPORT=y          # PPP não usado mas compilado
+CONFIG_SPIFFS_SUPPORT=y            # Cache offline
+CONFIG_BT_ENABLED=y                # BLE Mesh + GATT
+CONFIG_BT_NIMBLE_ENABLED=n         # Usar Bluedroid (padrão)
+CONFIG_PARTITION_TABLE_CUSTOM=y    # Partições OTA
 ```
 
 ---
 
-## 3. Notas Importantes sobre o SDK Config e Hardware
-
-Algumas configurações cruciais foram adicionadas ao [sdkconfig.defaults](file:///D:/git/Bastao/Bastao-ESP/esp32_firmware/sdkconfig.defaults) para evitar falhas físicas e lógicas:
-
-### A. Tamanho da Memória Flash (4MB)
-A tabela de partições do Bastão-ESP ([partitions.csv](file:///D:/git/Bastao/Bastao-ESP/esp32_firmware/partitions.csv)) foi estendida para **1600KB** nas partições de aplicativo redundantes (`ota_0`/`ota_1`) para acomodar as bibliotecas de BLE Mesh e rede celular. 
-O tamanho total ocupado pelas partições é de aproximadamente **3.8MB**. Por isso, o tamanho padrão de flash do projeto foi alterado de 2MB para 4MB:
-```ini
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
-CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
-```
-*Se a gravação falhar ou o CMake alertar sobre o tamanho de flash excedido, certifique-se de que essas opções estão configuradas para 4MB.*
-
-### B. Otimização de IRAM (Evitar estouro de memória de instruções)
-Compilar o suporte a Wi-Fi, BLE e Pilha de Rede Celular consome muita memória IRAM. Por padrão, o ESP-IDF coloca funções críticas de Wi-Fi e PHY na IRAM para velocidade de execução, o que causa estouro do segmento `.iram0.text` (comum estourar em ~7KB a 10KB).
-Para evitar esse erro de linkagem, desabilitamos essa otimização nas configurações:
-```ini
-CONFIG_ESP_WIFI_IRAM_OPT=n
-CONFIG_ESP_WIFI_RX_IRAM_OPT=n
-CONFIG_ESP_PHY_IRAM_OPT=n
-```
-Isso move as rotinas não críticas de Wi-Fi e PHY para a memória Flash externa, liberando cerca de 15KB na IRAM.
-
-### C. Suporte a Conexão Celular (PPP)
-O módulo de telefonia celular [simcom_ppp.c](file:///D:/git/Bastao/Bastao-ESP/esp32_firmware/main/simcom_ppp.c) integra-se à pilha TCP/IP do ESP-IDF. É necessário que o suporte a PPP esteja ativo no LwIP:
-```ini
-CONFIG_LWIP_PPP_SUPPORT=y
-CONFIG_LWIP_PPP_PAP_SUPPORT=y
-CONFIG_LWIP_PPP_CHAP_SUPPORT=y
-```
-
----
-
-## 4. Compilação do STM32 (Firmware)
-
-O firmware do STM32 controla periféricos e estados de baixo consumo. Ele está em [stm32_firmware/](file:///D:/git/Bastao/Bastao-ESP/stm32_firmware).
-
-### Usando STM32CubeIDE
-1. Abra o STM32CubeIDE.
-2. Importe o projeto `stm32_firmware` a partir do diretório raiz.
-3. Clique em **Build > Build Project** para gerar o arquivo `.elf`/`.bin`.
-
-### Usando make (CLI)
-```bash
-cd stm32_firmware
-make
-```
-
----
-
-## 5. Compilação do K10 Firmware (ESP32-S3 Receptor)
-
-O K10 atua como nó Mesh receptor. Ele reside em [k10_firmware/](file:///D:/git/Bastao/Bastao-ESP/k10_firmware).
+## 4. Compilar K10
 
 ```bash
 cd k10_firmware
 
-# Configure o target do chip para ESP32-S3
+# 1. Configurar target (primeira vez apenas)
 idf.py set-target esp32s3
 
-# Compile o projeto
+# 2. Compilar
+idf.py build
+
+# 3. Gravar (erase-flash recomendado ao mudar CID do vendor model)
+idf.py -p COM5 erase-flash flash monitor
+
+# Para sair do monitor: Ctrl+]
+```
+
+### 4.1 Configurações do sdkconfig (K10)
+
+```
+CONFIG_BLE_MESH=y                  # BLE Mesh Node
+CONFIG_BLE_MESH_SETTINGS=y         # Persistência NVS da subnet
+CONFIG_BT_GATTS_SEND_SERVICE_CHANGE_MANUAL=y
+CONFIG_LVGL_ENABLE=y               # LVGL GUI
+```
+
+---
+
+## 6. Limpeza de NVS
+
+Para resetar configurações salvas na NVS (útil quando alterar modo de rede):
+
+```bash
+idf.py erase_flash
+```
+
+Ou apenas apagar a partição NVS:
+```bash
+idf.py erase_partition nvs
+```
+
+---
+
+## 7. Estrutura de Diretórios
+
+```
+Bastao-ESP/
+├── esp32_firmware/           # Firmware ESP32 (ESP-IDF)
+│   ├── main/                 # Código fonte
+│   │   ├── main.c            # Orquestrador principal
+│   │   ├── simcom_driver.c   # Driver SIMCom (AT commands)
+│   │   ├── stm32_uart.c      # Comunicação STM32
+│   │   ├── mqtt_publisher.c  # MQTT WiFi (opcional)
+│   │   ├── ble_mobile.c      # BLE GATT Server
+│   │   ├── mesh_coordinator.c# BLE Mesh Coordinator
+│   │   ├── secure_payload.c  # AES-256-CBC
+│   │   ├── offline_cache.c   # Cache SPIFFS
+│   │   ├── private_configs.h # GERADO - não editar
+│   │   └── rfid_dedup.c      # Deduplicação RFID
+│   ├── private_configs.env   # Configurações (EDITAR)
+│   ├── generate_config.py    # Gerador do .h
+│   └── sdkconfig.defaults    # Configurações IDF
+│
+├── k10_firmware/             # Firmware Tela K10 (ESP-IDF + LVGL)
+│   ├── main/                 # main.c, gui_task, network_task
+│   ├── components/           # Componentes customizados
+│   │   ├── k10_mesh/         # BLE Mesh Node (receptor RFID, GPS, cell)
+│   │   ├── gui/              # LVGL (telas, temas, sensores)
+│   │   ├── hal_display/      # LCD ILI9341 + touch FT6236
+│   │   ├── hal_sensors/      # Acelerômetro SC7A20
+│   │   └── hal_buttons/      # Botões físicos
+│   └── sdkconfig.defaults    # Configurações IDF
+│
+├── stm32_firmware/           # Firmware STM32 (CubeIDE)
+│   ├── Core/Src/             # Código fonte
+│   │   ├── main.c            # Loop principal
+│   │   ├── rfid_parser.c     # Parse YRM100 + WL-134
+│   │   ├── battery_monitor.c # ADC bateria
+│   │   ├── power_mgmt.c      # Sleep/wake
+│   │   └── alerts.c          # Buzzer e alertas
+│   └── Debug/                # Build artifacts
+│
+├── k10_firmware/             # Firmware Tela K10 (ESP-IDF)
+├── Manual/                   # Documentação técnica
+├── docs/                     # Documentação do projeto
+└── aprendizado/              # Arduino sketches de referência
+```
+
+---
+
+## 5. OTA (Over-the-Air) — Preparação do Binário
+
+### Gerar o Firmware para OTA
+
+```bash
+cd D:\git\Bastao\Bastao-ESP\esp32_firmware
 idf.py build
 ```
 
----
-
-## 6. Testes Automatizados e Diagnósticos
-
-O diretório [teste_automatizado/](file:///D:/git/Bastao/Bastao-ESP/teste_automatizado) oferece scripts Python de validação de campo:
-
-```bash
-cd teste_automatizado
-
-# Testar configuração básica de rede
-python verify_network_config.py
-
-# Validar consumo e modos de sono
-python verify_sleep_modes.py
-
-# Teste de estresse de tráfego de dados na rede Mesh
-python verify_mesh_stress.py
-
-# Visualização de logs remotos (Telnet) do Bastão
-python esp32_log_viewer.py <IP_DO_BASTAO>
+O binário de firmware completo estará em:
+```
+esp32_firmware/build/bastao_esp_coordinator.bin
 ```
 
+Ou genericamente em:
+```
+esp32_firmware/build/*.bin
+```
+
+> **Importante:** Use o arquivo `.bin` completo (não o `ota_data_initial.bin`, que é apenas para primeira gravação via serial).
+
+### Hospedagem
+
+O binário deve ser hospedado em servidor **HTTPS** com certificado SSL válido. O ESP32 usa `esp_crt_bundle_attach` para verificar o certificado.
+
+Exemplos de servidores compatíveis:
+- GitHub Releases: `https://github.com/user/repo/releases/download/v1.0/bastao.bin`
+- Nginx/Apache estático
+- Servidor local na fazenda (rede Wi-Fi)
+
+### Disparo
+
+Envie comando MQTT para `id/{MAC}/cmd`:
+```json
+{"cmd":"ota","url":"https://servidor.com/bastao_v2.0.bin"}
+```
+
+### Limitações
+
+- **Wi-Fi é obrigatório**: OTA via 4G não funciona (vide documentação técnica).
+- **K10 não suporta OTA**: Display K10 requer gravação via USB/serial.
+- **Sem report de progresso**: O status do OTA não é publicado de volta ao MQTT.
+
 ---
 
-## 7. Características GATT do Bastão-ESP (BLE)
+## 6. Troubleshooting
 
-UUIDs de comunicação para a aplicação móvel:
+### Log nível DEBUG
+```c
+// Em main.c, ajustar níveis de log:
+esp_log_level_set("SIMCOM_DRV", ESP_LOG_DEBUG);    // AT commands
+esp_log_level_set("SIMCOM_DRV", ESP_LOG_INFO);     // Só resultados
+esp_log_level_set("SIMCOM_DRV", ESP_LOG_WARN);     // Só erros
+```
 
-| UUID | Nome | Descrição |
-|------|------|-----------|
-| `0xFF01` | Config Write | Escrita de configurações enviadas pelo app |
-| `0xFF02` | Config Read | Leitura de configurações do bastão |
-| `0xFF03` | Business Write | Envio de dados e payloads de negócio |
-| `0xFF04` | Last Tag | Notificação da última tag RFID lida |
-| `0xFF05` | Device Status | Estado físico e bateria do bastão |
-| `0xFF06` | Cellular Status | Status da conexão 4G/LTE e RSSI |
-| `0xFF07` | Logger | Stream de logs remotos em tempo real |
+### Erro: "Fila de publicacao MQTT nao inicializada"
+**Causa:** Modo CELLULAR_ONLY sem `mqtt_publisher_init()` (esperado).
+**Solução:** O dispatcher e offline cache já usam `simcom_driver_mqtt_publish()` diretamente.
 
----
+### Erro: "AT Timeout" no primeiro AT
+**Causa:** Modem não respondeu no tempo configurado.
+**Verificar:**
+1. Polaridade do PWRKEY (GPIO4 HIGH 2s → LOW)
+2. Baud rate (115200)
+3. Alimentação do modem (3.8V típico)
 
-## 8. Requisitos e Dependências do Sistema
-
-### ESP32 (Bastão / K10)
-- **Framework:** ESP-IDF v5.5.2
-- **Python:** v3.8+ (v3.11 recomendado no ambiente virtual)
-- **Ferramenta de Build:** CMake 3.16+ e Ninja
-- **Biblioteca de Interface (K10):** LVGL 8.x
-- **SDK de Comunicação:** ESP-BLE-Mesh
-
-### STM32
-- **IDE:** STM32CubeIDE 1.12+ ou Toolchain `arm-none-eabi-gcc`
-- **Microcontrolador:** STM32G070CBTx
+### Erro: MQTT subscribe erro 14 ("client is busy")
+**Causa:** Segundo subscribe enviado sem delay.
+**Solução:** Delay de 1s entre subscribes já implementado.

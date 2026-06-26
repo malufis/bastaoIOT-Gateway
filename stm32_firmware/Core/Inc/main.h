@@ -86,11 +86,6 @@ void Alerts_ProcessCommand(const char* json);
 void Buzzer_Play(BuzzerPattern_t pattern);
 
 void Power_Init(void);
-void Power_Update(void);
-void Power_Sleep(void);
-void Power_Wake(void);
-uint8_t Power_IsSleeping(void);
-void Power_ActivityDetected(void);
 
 /* LED Status Definition */
 #define LED_STATUS_PORT GPIOB

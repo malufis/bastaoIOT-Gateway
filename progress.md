@@ -387,5 +387,234 @@
   - `task_plan.md` (modificado - fase 31 concluida)
   - `ROADMAP.md` (modificado - fase 31 concluida)
 
+## Session: 2026-06-12
+
+### Phase 32: Reset STM32 via GPIO19 e Watchdog com Grace Period
+- **Status:** complete
+- **Actions taken:**
+  - Adicionado `STM32_RESET_PIN GPIO_NUM_19` em `stm32_uart.h`
+  - Implementado `stm32_uart_reset_init()` com correcao de glitch (gpio_set_level antes de gpio_config)
+  - Implementado `stm32_uart_reset_stm32()` com pulso LOW de 100ms
+  - Aplicado reset na inicializacao do ESP32 para sincronizar STM32
+  - Adicionado watchdog inteligente: so conta falhas apos primeiro heartbeat recebido
+  - Aumentado limiar de reset para 120 ciclos (~120s)
+  - Criada funcao `stm32_uart_has_ever_been_alive()`
+  - Corrigidos comentarios "GPIO23" para "GPIO19"
+- **Files created/modified:**
+  - `esp32_firmware/main/stm32_uart.h` (modificado - STM32_RESET_PIN, prototipos)
+  - `esp32_firmware/main/stm32_uart.c` (modificado - reset_init, reset_stm32, has_ever_been_alive)
+  - `esp32_firmware/main/main.c` (modificado - watchdog com grace period, comentario)
+
+### Phase 33: Filtro de Deduplicacao de Leituras RFID
+- **Status:** complete
+- **Actions taken:**
+  - Criado modulo `rfid_dedup.c/.h` com tabela circular de 64 entradas
+  - Criterios de duplicata: mesma tag + mesma posicao GPS (<50m) + janela <10s
+  - Integrado no `dispatcher_task` antes de processar RFID (continue se duplicata)
+  - `rfid_dedup_init()` chamado em `app_main()`
+  - Adicionado ao `CMakeLists.txt`
+- **Files created/modified:**
+  - `esp32_firmware/main/rfid_dedup.h` (criado)
+  - `esp32_firmware/main/rfid_dedup.c` (criado)
+  - `esp32_firmware/main/main.c` (modificado - include + init + dedup check)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado - add rfid_dedup.c)
+
+### Phase 34: Wake Sources RFID no STM32 Sleep
+- **Status:** complete
+- **Actions taken:**
+  - Habilitado `HAL_UARTEx_EnableStopMode(&huart3)` para WL-134
+  - Habilitado `HAL_UARTEx_EnableStopMode(&huart4)` para YRM100
+  - Adicionado DisableStopMode correspondente ao sair do STOP mode
+- **Files created/modified:**
+  - `stm32_firmware/Core/Src/power_mgmt.c` (modificado - wake sources USART3/4)
+
+## Session: 2026-06-12 (Parte 2)
+
+### Fase 32b: Correcao do Circuito de Reset com Transistor NPN
+- **Status:** complete
+- **Actions taken:**
+  - Descoberto que o circuito de reset possui um **transistor NPN** entre GPIO19 e NRST, invertendo a logica
+  - Corrigido `stm32_uart_reset_init()`:
+    - `gpio_set_level(0)` inicial (LOW = transistor OFF = STM32 roda)
+    - `GPIO_MODE_OUTPUT_OD` → `GPIO_MODE_OUTPUT_PP` (push-pull para acionar transistor)
+    - Removido pull-up (nao necessario para push-pull)
+  - Corrigido `stm32_uart_reset_stm32()`:
+    - Antes: LOW → delay → HIGH (logica invertida)
+    - Depois: HIGH → delay → LOW (HIGH = transistor ON = NRST LOW = reset)
+  - Atualizada documentacao em `PROJETO_BASTAO.md`, `stm32_uart.h`, `stm32_uart.c`
+  - Atualizado `ROADMAP.md` com a correcao do circuito
+- **Files created/modified:**
+  - `esp32_firmware/main/stm32_uart.c` (modificado - logica invertida e push-pull)
+  - `esp32_firmware/main/stm32_uart.h` (modificado - documentacao do transistor)
+  - `PROJETO_BASTAO.md` (modificado - secao do circuito de reset)
+  - `ROADMAP.md` (modificado - task 32.8)
+  - `progress.md` (modificado - esta sessao)
+
+## Session: 2026-06-12 (Parte 3)
+
+### Fase 35: Correcao do Circuito de Reset com Transistor NPN
+- **Status:** complete
+- **Actions taken:**
+  - Descoberto transistor NPN entre GPIO19 e NRST (logica invertida)
+  - Alterado modo de `OUTPUT_OD` para `OUTPUT_PP` (push-pull)
+  - `reset_init`: inicializa LOW (STM32 roda)
+  - `reset_stm32`: HIGH 100ms → LOW (corrigido)
+- **Files modified:**
+  - `esp32_firmware/main/stm32_uart.c` (modificado)
+  - `esp32_firmware/main/stm32_uart.h` (modificado)
+
+### Fase 36: Filtro de Deduplicacao RFID
+- **Status:** complete
+- **Actions taken:**
+  - Criado `rfid_dedup.c/.h` com tabela circular de 64 entradas
+  - Criterios: tag + modelo + 10s + GPS <50m
+  - Integrado no `dispatcher_task` no main.c
+- **Files created/modified:**
+  - `esp32_firmware/main/rfid_dedup.h` (criado)
+  - `esp32_firmware/main/rfid_dedup.c` (criado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+
+### Fase 37: Gerenciamento de Chip SIM (DSSS)
+- **Status:** complete
+- **Actions taken:**
+  - Substituido `AT+SWITCHSIM` por `AT*SELECTSIMSLOT` (com * proprietario)
+  - Sequencia DSSS: CFUN=0 → SELECTSIMSLOT → CFUN=1 → CPIN?
+  - Removidos fallbacks SWITCHSIM/DUALSIM
+  - Corrigido CCID: `AT+CCID` → `AT+CICCID`
+  - Watchdog ajustado para swap so se chip ausente
+- **Files modified:**
+  - `esp32_firmware/main/simcom_ppp.c` (modificado)
+  - `esp32_firmware/main/simcom_ppp.h` (modificado)
+
+### Fase 38: Sincronizacao de Horario (Torre + SNTP)
+- **Status:** complete
+- **Actions taken:**
+  - Criado `simcom_ppp_sync_time_from_tower()` com AT+CCLK e settimeofday
+  - Adicionado SNTP com servidores pool.ntp.org, a.ntp.br, b.ntp.br
+  - Log [HB] a cada 10s com horario formatado
+  - Log [MQTT_ENVIO] com payload pre-criptografia
+- **Files modified:**
+  - `esp32_firmware/main/simcom_ppp.c` (modificado)
+  - `esp32_firmware/main/simcom_ppp.h` (modificado)
+  - `esp32_firmware/main/main.c` (modificado)
+
+## Session: 2026-06-12 (Parte 4 - Final)
+
+### Fase 39: Correcao Sleep STM32 e Wake via UART
+- **Status:** complete
+- **Actions taken:**
+  - POWER_SLEEP_TIMEOUT_MS: 30s → 120s
+  - Log JSON sleep/wake do STM32 para ESP32
+  - Re-arm RX interrupts apos wake
+  - ESP32 envia \n apos 60s sem heartbeat como wake preventivo
+  - DATA_TYPE_POWER adicionado no parser
+- **Files modified:**
+  - `stm32_firmware/Core/Inc/power_mgmt.h` (modificado)
+  - `stm32_firmware/Core/Src/power_mgmt.c` (modificado)
+  - `esp32_firmware/main/stm32_uart.c` (modificado - DATA_TYPE_POWER)
+
+### Fase 40: Otimizacao UART e Core Pinning
+- **Status:** complete
+- **Actions taken:**
+  - UART RX alterado de byte-a-byte para leitura em blocos de 1024 bytes
+  - Todas as tarefas FreeRTOS fixadas em nucleos dedicados:
+    - Core 0: stm32_uart_rx (prio 7), dispatcher (prio 6)
+    - Core 1: watchdog, MQTT, PPP, OTA, cache, logger
+- **Files modified:**
+  - `esp32_firmware/main/stm32_uart.c` (modificado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/simcom_ppp.c` (modificado)
+  - `esp32_firmware/main/mqtt_publisher.c` (modificado)
+  - `esp32_firmware/main/offline_cache.c` (modificado)
+  - `esp32_firmware/main/esp32_logger.c` (modificado)
+  - `esp32_firmware/main/ota_manager.c` (modificado)
+
+### Fase 41: GPS Logs de Diagnostico
+- **Status:** complete
+- **Actions taken:**
+  - Todos os logs de GPS alterados para ESP_LOGI (visiveis sempre)
+  - Logs detalhados: cold start, tentativas, parse, fix
+  - Prefixo [GPS] em todas as mensagens
+- **Files modified:**
+  - `esp32_firmware/main/simcom_ppp.c` (modificado)
+
+## Session: 2026-06-15
+
+### Fase 42: Transição de Conectividade Celular (Remoção do PPP e Uso de Comandos AT + MQTT Direto)
+- **Status:** complete
+- **Actions taken:**
+  - Removido completamente o protocolo PPP sobre interface celular (desativado `esp_netif_ppp` e pilha de rede celular LwIP).
+  - Criado o novo driver `simcom_driver.c/.h` contendo parser serial avançado (`simcom_uart_rx_task`), sincronização por mutexes e semáforos, processador de URCs (incluindo `+CMQTTDELIVER` e `+CMQTTCONNLOST`), e cliente MQTT nativo embutido do modem SIMCom.
+  - Excluído os arquivos obsoletos `simcom_ppp.c` e `simcom_ppp.h`.
+  - Refatorado `mqtt_publisher.c/.h` para direcionar de forma dinâmica o envio via `esp_mqtt` (se por Wi-Fi) ou `simcom_driver_mqtt_publish` (se por 4G Celular).
+  - Atualizado `ota_manager.c` para restringir atualizações OTA exclusivamente a conexões Wi-Fi, já que a rede celular não possui mais roteamento LwIP local.
+  - Sincronização de relógio (SNTP) restrita a Wi-Fi; no celular o tempo é sincronizado diretamente da torre via comando `AT+CCLK?`.
+  - Atualizado `main.c`, `wifi_driver.c`, `ble_mobile.c` e documentações técnicas (`ROADMAP.md`, `Manual/arquitetura.md`, `Manual/funcionalidades.md`, `task_plan.md`, `PROJETO_BASTAO.md` e `README.md`).
+- **Files created/modified/deleted:**
+  - `esp32_firmware/main/simcom_driver.h` (criado)
+  - `esp32_firmware/main/simcom_driver.c` (criado)
+  - `esp32_firmware/main/simcom_ppp.h` (deletado)
+  - `esp32_firmware/main/simcom_ppp.c` (deletado)
+  - `esp32_firmware/main/CMakeLists.txt` (modificado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/mqtt_publisher.h` (modificado)
+  - `esp32_firmware/main/mqtt_publisher.c` (modificado)
+  - `esp32_firmware/main/wifi_driver.c` (modificado)
+  - `esp32_firmware/main/ble_mobile.c` (modificado)
+  - `esp32_firmware/main/ota_manager.c` (modificado)
+  - `Manual/arquitetura.md` (modificado)
+  - `Manual/funcionalidades.md` (modificado)
+  - `ROADMAP.md` (modificado)
+  - `task_plan.md` (modificado)
+  - `PROJETO_BASTAO.md` (modificado)
+  - `README.md` (modificado)
+  - `progress.md` (modificado)
+
+
+## Session: 2026-06-18
+
+### Phase 45: Otimização SIMCom (Captura de Tags) + GPS Hot Start
+- **Status:** complete
+- **Started:** 2026-06-18T08:56:00
+- **Actions taken:**
+  - Desacoplado o envio MQTT em modo `CELLULAR_ONLY` do loop do despachante. A fila e a tarefa `mqtt_pub_task` agora rodam de forma incondicional, enviando no background e evitando perdas de tags por latência serial do modem.
+  - Corrigido bug no watchdog que recriava sucessivamente a task `simcom_rx` e deletava o driver UART. Agora são configurados apenas uma vez.
+  - Implementada a flag `first_init_done` para pular a varredura DSSS física de slots SIM no watchdog, cortando tempo de inicialização em 15s.
+  - Otimizado `simcom_driver_get_status` e o orquestrador para lerem métricas em cache. Operações lentas de leitura de operadora (`AT+COPS?`) e logs de erro (`AT+CEER`) agora ocorrem em segundo plano a cada 5 minutos.
+  - Configurado GPS em modo Hot Start rápido via AP_Flash usando `AT+CGNSSPWR=1,1` (power on) e `AT+CGNSSPWR=0,1` (power off) para armazenar órbitas.
+- **Files modified:**
+  - `esp32_firmware/main/mqtt_publisher.c` (modificado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/main/simcom_driver.c` (modificado)
+  - `ROADMAP.md` (modificado)
+  - `task_plan.md` (modificado)
+   - `AGENTS.md` (modificado)
+   - `progress.md` (modificado)
+
+
+
+## Session: 2026-06-25
+
+### Phase 47: Documentação Completa de OTA
+- **Status:** complete
+- **Actions taken:**
+  - Mapeada capacidade OTA atual do projeto: ESP32 (Wi-Fi apenas ✅), K10 (não suporta ❌), modem SIMCom (FOTA não implementado ❌).
+  - Adicionada seção "Atualização OTA" completa em `PROJETO_BASTAO.md` — arquitetura, partições, fluxo, limitações, geração de binário, teste.
+  - Corrigida seção 2.6 em `Manual/funcionalidades.md` — removida menção incorreta a "4G", adicionadas limitações reais, esclarecido escopo (ESP32 apenas).
+  - Atualizada `Manual/arquitetura.md` — adicionadas notas sobre partições A/B e rollback.
+  - Adicionadas 3 fases futuras em `ROADMAP.md` (Fase 44: OTA via 4G, Fase 45: OTA na K10, Fase 46: CI/CD + Report).
+  - Adicionada seção de preparação de binário OTA em `COMPILATION_GUIDE.md`.
+  - Adicionados indicadores de limitação OTA no `README.md`.
+  - Sessão 35 registrada em `AGENTS.md`.
+- **Files modified:**
+  - `PROJETO_BASTAO.md` (modificado)
+  - `Manual/funcionalidades.md` (modificado)
+  - `Manual/arquitetura.md` (modificado)
+  - `ROADMAP.md` (modificado)
+  - `COMPILATION_GUIDE.md` (modificado)
+  - `README.md` (modificado)
+  - `AGENTS.md` (modificado)
+  - `progress.md` (modificado)
 
 

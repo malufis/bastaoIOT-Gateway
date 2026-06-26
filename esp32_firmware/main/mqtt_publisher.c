@@ -16,7 +16,9 @@
 #include "mqtt_client.h"
 #include "offline_cache.h"
 #include "ota_manager.h"
-#include "simcom_ppp.h"
+#include "secure_payload.h"
+#include "simcom_driver.h"
+#include "wifi_driver.h"
 #include "esp_mac.h"
 #include <string.h>
 #include "ble_mobile.h"
@@ -157,17 +159,33 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
  */
 static void mqtt_publish_task(void *pvParameters) {
   mqtt_publish_msg_t msg;
+  char payload_to_send[768];
 
   ESP_LOGI(TAG, "Task de publicacao MQTT iniciada.");
 
   while (1) {
     // Aguarda indefinidamente por mensagens na fila de publicacao
     if (xQueueReceive(mqtt_publish_queue, &msg, portMAX_DELAY) == pdTRUE) {
-      if (!mqtt_connected) {
+      // Criptografa payload se for raw JSON (needs_encrypt == true)
+      const char *final_payload = msg.payload;
+      if (msg.needs_encrypt) {
+        memset(payload_to_send, 0, sizeof(payload_to_send));
+        esp_err_t err = secure_payload_encrypt(msg.payload, payload_to_send, sizeof(payload_to_send));
+        if (err != ESP_OK) {
+          ESP_LOGE(TAG, "Falha ao criptografar payload MQTT. Descartando.");
+          continue;
+        }
+        final_payload = payload_to_send;
+      }
+
+      bool wifi_mqtt_ok = wifi_driver_is_connected() && mqtt_connected;
+      bool cellular_mqtt_ok = simcom_driver_is_connected();
+
+      if (!wifi_mqtt_ok && !cellular_mqtt_ok) {
         ESP_LOGW(TAG,
-                 "MQTT desconectado. Salvando no cache offline (topico: %s).",
+                 "MQTT desconectado (Wi-Fi e Celular indisponiveis). Salvando no cache offline (topico: %s).",
                  msg.topic);
-        offline_cache_write(msg.payload);
+        offline_cache_write(final_payload);
         continue;
       }
 
@@ -180,18 +198,32 @@ static void mqtt_publish_task(void *pvParameters) {
         publish_topic = dynamic_topic_gps;
       }
 
-      // Publica a mensagem no broker
-      int msg_id = esp_mqtt_client_publish(mqtt_client, publish_topic, msg.payload,
-                                           strlen(msg.payload), msg.qos, 0);
-      if (msg_id < 0) {
-        ESP_LOGE(
-            TAG,
-            "Falha na publicacao MQTT. Topico: %s. Salvando no cache offline.",
-            publish_topic);
-        offline_cache_write(msg.payload);
-      } else {
-        ESP_LOGI(TAG, "Publicacao MQTT agendada. Topico: %s, MSG_ID: %d",
-                 publish_topic, msg_id);
+      if (wifi_mqtt_ok) {
+        // Publica a mensagem no broker via Wi-Fi/esp_mqtt
+        int msg_id = esp_mqtt_client_publish(mqtt_client, publish_topic, final_payload,
+                                             strlen(final_payload), msg.qos, 0);
+        if (msg_id < 0) {
+          ESP_LOGE(
+              TAG,
+              "Falha na publicacao MQTT (Wi-Fi). Topico: %s. Salvando no cache offline.",
+              publish_topic);
+          offline_cache_write(final_payload);
+        } else {
+          ESP_LOGI(TAG, "Publicacao MQTT (Wi-Fi) agendada. Topico: %s, MSG_ID: %d",
+                   publish_topic, msg_id);
+        }
+      } else if (cellular_mqtt_ok) {
+        // Publica a mensagem no broker via Celular/SIMCom AT
+        esp_err_t pub_err = simcom_driver_mqtt_publish(publish_topic, final_payload, msg.qos);
+        if (pub_err != ESP_OK) {
+          ESP_LOGE(
+              TAG,
+              "Falha na publicacao MQTT (Celular). Topico: %s. Salvando no cache offline.",
+              publish_topic);
+          offline_cache_write(final_payload);
+        } else {
+          ESP_LOGI(TAG, "Publicacao MQTT (Celular) concluida. Topico: %s", publish_topic);
+        }
       }
     }
   }
@@ -207,10 +239,7 @@ esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *config) {
   // Armazena a configuracao localmente
   memcpy(&stored_config, config, sizeof(mqtt_publisher_config_t));
 
-  ESP_LOGI(TAG, "Inicializando cliente MQTT para broker: %s",
-           config->broker_uri);
-
-  // 1. Cria a fila de publicacao MQTT
+  // 1. Cria a fila de publicacao MQTT sempre
   if (mqtt_publish_queue == NULL) {
     mqtt_publish_queue =
         xQueueCreate(MQTT_PUBLISH_QUEUE_DEPTH, sizeof(mqtt_publish_msg_t));
@@ -220,9 +249,17 @@ esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *config) {
     }
   }
 
+  if (bastao_network_config.mode == NETWORK_MODE_CELLULAR_ONLY) {
+    ESP_LOGI(TAG, "Modo CELLULAR_ONLY: Fila MQTT criada, cliente nativo esp_mqtt omitido.");
+    return ESP_OK;
+  }
+
+  ESP_LOGI(TAG, "Inicializando cliente esp_mqtt para broker: %s",
+           config->broker_uri);
+
   // 2. Gera client_id unico dinamico com base no IMEI ou MAC
   char dynamic_client_id[64];
-  const char *imei = simcom_ppp_get_imei();
+  const char *imei = simcom_driver_get_imei();
   if (imei != NULL && strcmp(imei, "bastao-esp-default") != 0 && strlen(imei) > 0) {
     snprintf(dynamic_client_id, sizeof(dynamic_client_id), "bastao_%s", imei);
   } else {
@@ -263,7 +300,7 @@ esp_err_t mqtt_publisher_init(const mqtt_publisher_config_t *config) {
     return err;
   }
 
-  ESP_LOGI(TAG, "Cliente MQTT iniciado. Conexao ao broker em andamento...");
+  ESP_LOGI(TAG, "Cliente esp_mqtt iniciado. Conexao ao broker em andamento...");
   return ESP_OK;
 }
 
@@ -285,9 +322,14 @@ esp_err_t mqtt_publisher_update_config(const mqtt_publisher_config_t *config) {
     mqtt_connected = false;
   }
 
+  if (bastao_network_config.mode == NETWORK_MODE_CELLULAR_ONLY) {
+    ESP_LOGI(TAG, "Modo CELLULAR_ONLY: Config atualizada. esp_mqtt nativo omitido.");
+    return ESP_OK;
+  }
+
   // Gera client_id unico dinamico com base no IMEI ou MAC
   char dynamic_client_id[64];
-  const char *imei = simcom_ppp_get_imei();
+  const char *imei = simcom_driver_get_imei();
   if (imei != NULL && strcmp(imei, "bastao-esp-default") != 0 && strlen(imei) > 0) {
     snprintf(dynamic_client_id, sizeof(dynamic_client_id), "bastao_%s", imei);
   } else {
@@ -332,16 +374,18 @@ esp_err_t mqtt_publisher_update_config(const mqtt_publisher_config_t *config) {
   dynamic_topic_cmd[0] = '\0';
   dynamic_topic_config[0] = '\0';
 
-  ESP_LOGI(TAG, "Novo cliente MQTT iniciado e conectando...");
+  ESP_LOGI(TAG, "Novo cliente esp_mqtt iniciado e conectando...");
   return ESP_OK;
 }
 
 BaseType_t mqtt_publisher_task_start(UBaseType_t priority) {
-  return xTaskCreate(mqtt_publish_task, "mqtt_pub_task", 4096, NULL, priority,
-                     NULL);
+  return xTaskCreatePinnedToCore(mqtt_publish_task, "mqtt_pub_task", 8192, NULL, priority,
+                     NULL, 1);
 }
 
-bool mqtt_publisher_is_connected(void) { return mqtt_connected; }
+bool mqtt_publisher_is_connected(void) {
+    return (wifi_driver_is_connected() && mqtt_connected) || simcom_driver_is_connected();
+}
 
 esp_err_t mqtt_publisher_enqueue(const char *topic, const char *payload,
                                  uint8_t qos) {
@@ -359,6 +403,33 @@ esp_err_t mqtt_publisher_enqueue(const char *topic, const char *payload,
   strncpy(msg.topic, topic, sizeof(msg.topic) - 1);
   strncpy(msg.payload, payload, sizeof(msg.payload) - 1);
   msg.qos = qos;
+  msg.needs_encrypt = false;  // Pre-encrypted (from cache sync)
+
+  if (xQueueSend(mqtt_publish_queue, &msg, 0) != pdTRUE) {
+    ESP_LOGW(TAG, "Fila MQTT cheia. Mensagem descartada.");
+    return ESP_ERR_NO_MEM;
+  }
+
+  return ESP_OK;
+}
+
+esp_err_t mqtt_publisher_enqueue_raw(const char *topic, const char *payload,
+                                     uint8_t qos) {
+  if (topic == NULL || payload == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  if (mqtt_publish_queue == NULL) {
+    ESP_LOGE(TAG, "Fila de publicacao MQTT nao inicializada.");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  mqtt_publish_msg_t msg;
+  memset(&msg, 0, sizeof(mqtt_publish_msg_t));
+  strncpy(msg.topic, topic, sizeof(msg.topic) - 1);
+  strncpy(msg.payload, payload, sizeof(msg.payload) - 1);
+  msg.qos = qos;
+  msg.needs_encrypt = true;  // Raw JSON - encrypt in publish task
 
   if (xQueueSend(mqtt_publish_queue, &msg, 0) != pdTRUE) {
     ESP_LOGW(TAG, "Fila MQTT cheia. Mensagem descartada.");

@@ -92,6 +92,26 @@ void stm32_monitor_count_stm32_dead(void)
     stats.stm32_dead_events++;
 }
 
+void stm32_monitor_count_duplicate(void)
+{
+    stats.rfid_duplicates++;
+    uint32_t now = xTaskGetTickCount();
+    if (now - last_dashboard_tick >= pdMS_TO_TICKS(MONITOR_DASHBOARD_INTERVAL_MS)) {
+        last_dashboard_tick = now;
+        stm32_monitor_print_dashboard();
+    }
+}
+
+void stm32_monitor_count_unique(void)
+{
+    stats.rfid_unique_total++;
+    uint32_t now = xTaskGetTickCount();
+    if (now - last_dashboard_tick >= pdMS_TO_TICKS(MONITOR_DASHBOARD_INTERVAL_MS)) {
+        last_dashboard_tick = now;
+        stm32_monitor_print_dashboard();
+    }
+}
+
 void stm32_monitor_print_dashboard(void)
 {
     TickType_t elapsed_ticks = xTaskGetTickCount() - start_tick;
@@ -112,6 +132,8 @@ void stm32_monitor_print_dashboard(void)
     print_line("Total msg", stats.total_messages, "");
     print_line("RFID YRM100", stats.rfid_yrm100, "");
     print_line("RFID WL134", stats.rfid_wl134, "");
+    print_line("RFID Unicas", stats.rfid_unique_total, "");
+    print_line("RFID Duplicatas", stats.rfid_duplicates, "");
     print_line("Bateria", stats.battery, "");
     print_line("Alerta", stats.alert, "");
     print_line("Heartbeat", stats.heartbeat, "");

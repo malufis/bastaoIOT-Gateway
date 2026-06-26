@@ -21,6 +21,8 @@ typedef struct {
     uint32_t unknown_types;
     uint32_t stm32_alive_checked;
     uint32_t stm32_dead_events;
+    uint32_t rfid_duplicates;
+    uint32_t rfid_unique_total;
 } stm32_monitor_stats_t;
 
 esp_err_t stm32_monitor_init(void);
@@ -34,5 +36,7 @@ void stm32_monitor_count_stm32_dead(void);
 void stm32_monitor_print_dashboard(void);
 void stm32_monitor_reset(void);
 const stm32_monitor_stats_t *stm32_monitor_get_stats(void);
+void stm32_monitor_count_duplicate(void);
+void stm32_monitor_count_unique(void);
 
 #endif

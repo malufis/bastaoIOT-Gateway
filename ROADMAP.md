@@ -513,3 +513,30 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
   - Testar com um power cycle manual (desligar e ligar alimentação do YRM100)
   - Verificar parsing do frame de resposta (especialmente EPC offset e checksum)
 
+---
+
+### **Fase 44 (Planejada): OTA via Celular (4G)**
+
+- **Objetivo:** Permitir atualização OTA do ESP32 Coordenador mesmo quando conectado apenas via 4G (modo CELLULAR_ONLY).
+- **Abordagem proposta:**
+  - Baixar o binário via comandos AT HTTP do modem (`AT+HTTPURL`, `AT+HTTPREAD`) para buffer do ESP32.
+  - Gravar na partição OTA inativa via `esp_ota_write()`.
+  - Manter rollback seguro (partições A/B já existentes).
+- **Dependências:** Implementação de download via AT commands no `simcom_driver.c`.
+
+### **Fase 45 (Planejada): OTA na Tela K10**
+
+- **Objetivo:** Adicionar suporte OTA ao display K10.
+- **Abordagem proposta:**
+  - Adicionar partição `ota_0` no `partitions.csv` da K10 (reduzir tamanho da `factory`).
+  - Receber binário via BLE Mesh (pacotes fragmentados) ou UART do ESP32.
+  - Usar `esp_ota_begin()` / `esp_ota_write()` / `esp_ota_end()` para gravação.
+
+### **Fase 46 (Planejada): CI/CD e Report de Progresso OTA**
+
+- **Objetivo:** Automatizar build e deploy de firmware, com feedback de status para a nuvem.
+- **Abordagem proposta:**
+  - GitHub Actions para build automático a cada tag/push.
+  - Upload do `.bin` para servidor HTTPS (GitHub Releases ou S3).
+  - Publicação MQTT de status OTA (iniciado, baixando X%, sucesso/erro).
+

@@ -10,11 +10,12 @@
  */
 
 #include "offline_cache.h"
+#include "mqtt_publisher.h"
+#include "ble_mobile.h"
 #include "esp_spiffs.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "mqtt_publisher.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/unistd.h>
@@ -213,7 +214,7 @@ bool offline_cache_is_empty(void) {
 }
 
 esp_err_t offline_cache_sync_task_start(int priority) {
-    BaseType_t ret = xTaskCreate(offline_cache_sync_task, "cache_sync_task", 4096, NULL, priority, NULL);
+    BaseType_t ret = xTaskCreatePinnedToCore(offline_cache_sync_task, "cache_sync_task", 4096, NULL, priority, NULL, 1);
     return (ret == pdPASS) ? ESP_OK : ESP_FAIL;
 }
 
@@ -227,7 +228,9 @@ static void offline_cache_sync_task(void *pvParameters) {
     ESP_LOGI(TAG, "Task de sincronizacao de cache iniciada.");
 
     while (1) {
-        // So tenta descarregar se estivermos conectados ao MQTT e o cache tiver mensagens
+        // So tenta descarregar se houver fila MQTT e cache com mensagens
+        // Usa mqtt_publisher_is_connected() como indicador de que o sistema
+        // esta apto a publicar (seja WiFi ou Celular).
         if (mqtt_publisher_is_connected() && !offline_cache_is_empty()) {
             ESP_LOGI(TAG, "Conexao restabelecida. Iniciando escoamento do cache offline...");
 
@@ -235,20 +238,19 @@ static void offline_cache_sync_task(void *pvParameters) {
                 memset(buf, 0, sizeof(buf));
                 esp_err_t err = offline_cache_read_next(buf, sizeof(buf));
                 if (err == ESP_OK) {
-                    // Envia para o topico de telemetria
-                    err = mqtt_publisher_enqueue("bastao/telemetria", buf, 1);
+                    // Sempre enfileira via mqtt_publisher_enqueue() — a task mqtt_pub_task
+                    // (prio 4) e a UNICA que acessa o driver SIMCom, eliminando contencao
+                    // de mutex entre cache_sync e mqtt_pub.
+                    const char *topic = bastao_network_config.mqtt.topic_telemetry;
+                    err = mqtt_publisher_enqueue(topic, buf, 1);
                     if (err == ESP_OK) {
-                        // Remove do cache apenas apos enfileirar com sucesso
                         offline_cache_pop();
-                        // Aguarda um pequeno delay para nao saturar a fila local do MQTT
-                        vTaskDelay(200 / portTICK_PERIOD_MS);
+                        vTaskDelay(100 / portTICK_PERIOD_MS);
                     } else {
-                        ESP_LOGW(TAG, "Falha ao reinserir mensagem no publicador MQTT. Tentando novamente mais tarde.");
+                        ESP_LOGW(TAG, "Fila MQTT cheia. Tentando novamente mais tarde.");
                         break;
                     }
                 } else if (err == ESP_ERR_NOT_FOUND) {
-                    // Arquivo fisico nao pode ser aberto (corrompido/inexistente)
-                    // Avanca o pop para nao travar a fila
                     offline_cache_pop();
                 } else {
                     ESP_LOGE(TAG, "Erro critico ao ler proximo registro de cache: %d", err);
@@ -258,7 +260,6 @@ static void offline_cache_sync_task(void *pvParameters) {
             ESP_LOGI(TAG, "Escoamento de cache concluido ou interrompido.");
         }
 
-        // Delay de verificacao do status
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 }

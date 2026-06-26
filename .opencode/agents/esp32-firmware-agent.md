@@ -4,7 +4,7 @@ Agente especializado no desenvolvimento, depuracao e manutencao do firmware ESP3
 
 ## Responsabilidades
 
-1. **Desenvolvimento de Firmware ESP32** utilizando ESP-IDF v5.5.2 e FreeRTOS
+1. **Desenvolvimento de Firmware ESP32** utilizando ESP-IDF v5.4.4 e FreeRTOS
 2. **Conectividade:**
    - Gerenciamento de interfaces Wi-Fi STA, BLE GATT Server, BLE Mesh Coordinator
    - Modem celular SIMCom 7663E (4G/LTE + GPS via PPP)
@@ -54,4 +54,4 @@ Agente especializado no desenvolvimento, depuracao e manutencao do firmware ESP3
 4. Usar `ESP_ERROR_CHECK()` apenas em inicializacao; em runtime tratar erros adequadamente
 5. Isolar configuracoes em `private_configs.h` (template em `private_configs.template.h`)
 6. Toda leitura RFID do STM32 deve passar pelo `animal_db` para enriquecimento
-7. Manter compatibilidade com ESP-IDF v5.5.2 — nao usar APIs depreciadas
+7. Manter compatibilidade com ESP-IDF v5.4.4 — nao usar APIs depreciadas

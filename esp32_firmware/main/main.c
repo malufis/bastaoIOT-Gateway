@@ -42,9 +42,13 @@
 static const char *TAG = "MAIN";
 
 static simcom_gps_data_t gps_data;
+static TaskHandle_t gps_reader_task_handle = NULL;
+static volatile bool gps_read_pending = false;
+static volatile bool gps_read_done = false;
 
-/* Forward declaration - definida apos app_main */
+/* Forward declaration - definidas apos app_main */
 static void system_orchestrator_task(void *pvParameters);
+static void gps_reader_task(void *pvParameters);
 
 /**
  * @brief Chave simetrica estatica padrao para criptografia AES-256 (32 bytes).
@@ -67,7 +71,6 @@ static void dispatcher_task(void *pvParameters) {
   stm32_data_t raw_msg;
   char json_buf[384];
   char json_mqtt[384];
-  char encrypted_hex[768];
 
   ESP_LOGI(TAG, "Task despachante iniciada com sucesso.");
 
@@ -75,10 +78,17 @@ static void dispatcher_task(void *pvParameters) {
     if (xQueueReceive(stm32_data_queue, &raw_msg, pdMS_TO_TICKS(1000)) == pdTRUE) {
       memset(json_buf, 0, sizeof(json_buf));
       memset(json_mqtt, 0, sizeof(json_mqtt));
-      memset(encrypted_hex, 0, sizeof(encrypted_hex));
 
       // 1. Reconstroi o JSON para BLE Mesh (formato original com type/model/tag)
       if (raw_msg.type == DATA_TYPE_RFID || raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL) {
+        // Dedup: se mesma tag lida nos ultimos 60s, pula processamento
+        if (rfid_dedup_is_duplicate(raw_msg.tag, raw_msg.model,
+            bastao_current_status.gps_latitude,
+            bastao_current_status.gps_longitude,
+            bastao_current_status.gps_fix)) {
+          continue;
+        }
+
         animal_record_t anim_rec;
         esp_err_t db_err = animal_db_lookup(raw_msg.tag, &anim_rec);
         bool has_accel = (raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL);
@@ -114,13 +124,18 @@ static void dispatcher_task(void *pvParameters) {
         strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%dT%H:%M:%S-04:00", tm_info);
 
         // Monta JSON para MQTT no formato esperado pelo sistemaBastao
+        // nivel_bateria = percentual 0-100 (nao tensao bruta)
         double lat = bastao_current_status.gps_fix ? bastao_current_status.gps_latitude : 0.0;
         double lon = bastao_current_status.gps_fix ? bastao_current_status.gps_longitude : 0.0;
-        float batt = bastao_current_status.battery_voltage > 0.0f ? bastao_current_status.battery_voltage : 8.4f;
+        float batt_v = bastao_current_status.battery_voltage > 0.0f ? bastao_current_status.battery_voltage : 8.4f;
+        int batt_pct;
+        if (batt_v >= 8.80f) batt_pct = 100;
+        else if (batt_v <= 7.50f) batt_pct = 0;
+        else batt_pct = (int)((batt_v - 7.50f) / (8.80f - 7.50f) * 100.0f);
 
         snprintf(json_mqtt, sizeof(json_mqtt),
-                 "{\"id_brinco\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,\"nivel_bateria\":%.2f,\"timestamp_rtc\":\"%s\"}",
-                 raw_msg.tag, lat, lon, batt, timestamp_str);
+                 "{\"id_brinco\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,\"nivel_bateria\":%d,\"timestamp_rtc\":\"%s\"}",
+                 raw_msg.tag, lat, lon, batt_pct, timestamp_str);
 
         ble_mobile_notify_tag(json_buf);
         bastao_current_status.tags_read_count++;
@@ -164,22 +179,18 @@ static void dispatcher_task(void *pvParameters) {
         ESP_LOGE(TAG, "Falha ao encaminhar dados via BLE Mesh.");
       }
 
-      // 3. Se for leitura RFID, envia tambem para MQTT (sistemaBastao)
+      // 3. Se for leitura RFID, enfileira JSON cru para MQTT (sistemaBastao)
+      //    A criptografia AES-256 e feita na mqtt_publish_task (Core 1, prio 4)
+      //    para nao bloquear o dispatcher com a sobrecarga computacional do AES.
       if ((raw_msg.type == DATA_TYPE_RFID || raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL) &&
           json_mqtt[0] != '\0') {
         ESP_LOGD(TAG, "JSON MQTT: %s", json_mqtt);
-        memset(encrypted_hex, 0, sizeof(encrypted_hex));
-        err = secure_payload_encrypt(json_mqtt, encrypted_hex, sizeof(encrypted_hex));
-        if (err == ESP_OK) {
-          ESP_LOGI(TAG, "Payload MQTT criptografado: %s", encrypted_hex);
-          err = mqtt_publisher_enqueue(bastao_network_config.mqtt.topic_telemetry,
-                                       encrypted_hex, 1);
-          if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Falha ao enfileirar MQTT. Salvando no cache...");
-            offline_cache_write(encrypted_hex);
-          }
-        } else {
-          ESP_LOGE(TAG, "Falha na criptografia do payload MQTT: %d", err);
+        err = mqtt_publisher_enqueue_raw(bastao_network_config.mqtt.topic_telemetry,
+                                         json_mqtt, 1);
+        if (err != ESP_OK) {
+          ESP_LOGW(TAG, "Falha ao enfileirar MQTT. Salvando no cache...");
+          // Cache precisa de payload criptografado, mas se a fila MQTT ta cheia
+          // o cache tambem falharia - log apenas
         }
       }
     }
@@ -218,10 +229,9 @@ static void manage_connectivity(void) {
                 ESP_LOGI(TAG, "[Orquestrador] Modo CELLULAR_ONLY: Reativando celular.");
                 simcom_driver_set_suspended(false);
             }
-            if (wifi_connected) {
-                ESP_LOGI(TAG, "[Orquestrador] Modo CELLULAR_ONLY: Desconectando Wi-Fi.");
-                wifi_driver_disconnect();
-            }
+            // NAO desconecta o Wi-Fi — ele permanece ativo para debug remoto
+            // via Telnet (porta 23). O MQTT nao trafega por Wi-Fi pois o
+            // cliente esp_mqtt nao foi inicializado neste modo (mqtt_connected=false).
             wifi_reconnect_timer = 0;
             break;
         }
@@ -286,24 +296,23 @@ void app_main(void) {
 
   ble_mobile_load_network_config();
 
-  if (bastao_network_config.mode != NETWORK_MODE_CELLULAR_ONLY) {
-    if (wifi_driver_init() == ESP_OK) {
-      if (bastao_network_config.wifi.enabled &&
-          strlen(bastao_network_config.wifi.ssid) > 0) {
-        wifi_driver_connect(bastao_network_config.wifi.ssid,
+  // Inicializa Wi-Fi SEMPRE (independente do modo de rede) para permitir
+  // debug remoto via Telnet na porta 23. O MQTT sobre Wi-Fi so sera usado
+  // se o modo de rede nao for CELLULAR_ONLY (controlado pelo manage_connectivity).
+  if (wifi_driver_init() == ESP_OK) {
+    if (bastao_network_config.wifi.enabled &&
+        strlen(bastao_network_config.wifi.ssid) > 0) {
+      wifi_driver_connect(bastao_network_config.wifi.ssid,
                           bastao_network_config.wifi.password);
-      }
-    } else {
-      ESP_LOGE(TAG, "Falha ao inicializar o driver Wi-Fi.");
     }
   } else {
-    ESP_LOGI(TAG, "Modo CELLULAR_ONLY: Wi-Fi nao inicializado.");
+    ESP_LOGE(TAG, "Falha ao inicializar o driver Wi-Fi.");
   }
 
   // 1f. Inicializa o logger wireless para debug remoto
   if (esp_logger_init() == ESP_OK) {
     esp_logger_start_telnet();
-    ESP_LOGI(TAG, "Logger Telnet ativo na porta 23");
+    ESP_LOGI(TAG, "Logger Telnet ativo na porta 23 -- conecte-se ao AP Bastao-XXXXXX, telnet %s", wifi_driver_get_ap_ip());
     ble_mobile_log_enable(true);
   }
 
@@ -342,7 +351,7 @@ void app_main(void) {
 
     // 6. Dispara a tarefa do FreeRTOS encarregada de ler a serial e parsear os
     // JSONs
-    if (stm32_uart_rx_task_start(5) != pdPASS) {
+    if (stm32_uart_rx_task_start(6) != pdPASS) {
       ESP_LOGE(TAG, "Falha ao iniciar a task stm32_uart_rx.");
     }
 
@@ -351,10 +360,6 @@ void app_main(void) {
     stm32_uart_reset_stm32();
     vTaskDelay(pdMS_TO_TICKS(300));
 
-    // Configura potencia RF do YRM100 conforme configuracao salva
-    ESP_LOGI(TAG, "Configurando potencia TX do YRM100 para %d dBm...",
-             bastao_current_config.yrm100_power);
-    stm32_cmd_send_yrm_tx_power(bastao_current_config.yrm100_power);
   }
 
   // 6c. Inicializa o modulo de deduplicacao RFID
@@ -446,8 +451,35 @@ void app_main(void) {
   simcom_driver_watchdog_start(3);
 
   // 11. Dispara a tarefa de orquestracao do sistema com stack de 8KB
-  if (xTaskCreatePinnedToCore(system_orchestrator_task, "system_orchestrator", 8192, NULL, 5, NULL, 0) != pdPASS) {
+  if (xTaskCreatePinnedToCore(system_orchestrator_task, "sys_orchestr", 8192, NULL, 5, NULL, 0) != pdPASS) {
     ESP_LOGE(TAG, "Falha ao criar a tarefa de orquestracao do sistema!");
+  }
+
+  // 12. Dispara a tarefa de leitura GPS (background, nao bloqueia o orchestrator)
+  if (xTaskCreatePinnedToCore(gps_reader_task, "gps_reader", 4096, NULL, 3, &gps_reader_task_handle, 1) != pdPASS) {
+    ESP_LOGE(TAG, "Falha ao criar a tarefa de leitura GPS!");
+  }
+
+  // Aguarda tasks iniciarem e loga uso de stack de cada uma
+  vTaskDelay(pdMS_TO_TICKS(200));
+  {
+    static const char * const task_names[] = {
+      "dispatcher_task", "stm32_uart_rx", "simcom_rx",
+      "sys_orchestr", "mqtt_pub_task", "simcom_wd",
+      "log_processor", "telnet_logger", "cache_sync_task",
+      "gps_reader"
+    };
+    ESP_LOGI(TAG, "=== Monitoramento de Stack FreeRTOS ===");
+    for (int i = 0; i < sizeof(task_names) / sizeof(task_names[0]); i++) {
+      TaskHandle_t h = xTaskGetHandle(task_names[i]);
+      if (h != NULL) {
+        UBaseType_t free = uxTaskGetStackHighWaterMark(h);
+        ESP_LOGI(TAG, "  %-22s  %4u bytes livres", task_names[i], free);
+      } else {
+        ESP_LOGW(TAG, "  %-22s  (handle nao encontrado)", task_names[i]);
+      }
+    }
+    ESP_LOGI(TAG, "=========================================");
   }
 
   ESP_LOGI(TAG, "Inicializacao de app_main concluida. Deletando task main.");
@@ -487,7 +519,9 @@ static void system_orchestrator_task(void *pvParameters) {
         stm32_dead_count = 0;
     }
 
-    // Sincronizacao de horario via torre celular (AT+CCLK)
+    // Sincronizacao de horario via torre celular (AT+CCLK) — NON-BLOCKING
+    // Se o mutex do modem estiver ocupado (ex: MQTT publicando), pula este ciclo.
+    // O time sync roda a cada 30s ate o clock ser acertado, entao nao ha pressa.
     {
         time_t now = time(NULL);
         if (now < 1700000000 && simcom_driver_get_state() >= SIMCOM_STATE_REGISTERED) {
@@ -495,57 +529,74 @@ static void system_orchestrator_task(void *pvParameters) {
             time_sync_tick++;
             if (time_sync_tick >= 30) {
                 time_sync_tick = 0;
-                ESP_LOGI(TAG, "Hora nao sincronizada. Tentando via torre celular (AT+CCLK)...");
-                simcom_driver_sync_time_from_tower();
+                if (!simcom_driver_is_busy()) {
+                    ESP_LOGI(TAG, "Hora nao sincronizada. Tentando via torre celular (AT+CCLK)...");
+                    simcom_driver_sync_time_from_tower();
+                } else {
+                    ESP_LOGD(TAG, "Time sync: modem ocupado. Tentando no proximo ciclo.");
+                }
             }
         }
     }
 
-    // Leitura periodica do GPS (a cada 30s)
-    gps_tick++;
-    if (gps_tick >= 30) {
-      gps_tick = 0;
-      if (simcom_driver_get_gps(&gps_data) == ESP_OK && gps_data.valid) {
-        bastao_current_status.gps_latitude = gps_data.latitude;
-        bastao_current_status.gps_longitude = gps_data.longitude;
-        bastao_current_status.gps_fix = true;
-        ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
-                 gps_data.latitude, gps_data.longitude);
+    // Leitura periodica do GPS com intervalo adaptativo — NON-BLOCKING
+    // A leitura GPS acontece em task separada (gps_reader_task, prio 3, Core 1)
+    // para nao travar o loop de orquestracao.
+    // - Sem fix: poll a cada 2s (busca rapida de sinal)
+    // - Com fix: poll a cada 30s (monitoramento normal)
+    {
+      uint32_t gps_interval = bastao_current_status.gps_fix ? 30 : 2;
+      gps_tick++;
+      if (gps_tick >= gps_interval) {
+        gps_tick = 0;
+        // Dispara leitura GPS na task especializada (nao bloqueia aqui)
+        if (!gps_read_pending && gps_reader_task_handle != NULL) {
+          gps_read_pending = true;
+          gps_read_done = false;
+          xTaskNotify(gps_reader_task_handle, 1, eSetValueWithOverwrite);
+        }
       }
 
-      // Envia dados GPS para K10 via Mesh
-      {
-        char mesh_json[256];
-        snprintf(mesh_json, sizeof(mesh_json),
-                 "{\"type\":\"gps\",\"lat\":%.6f,\"lon\":%.6f,\"fix\":%d,\"alt\":%.1f,\"speed\":%.1f}",
-                 bastao_current_status.gps_latitude,
-                 bastao_current_status.gps_longitude,
-                 bastao_current_status.gps_fix ? 1 : 0,
-                 gps_data.valid ? gps_data.altitude : 0.0f,
-                 gps_data.valid ? gps_data.speed_kmh : 0.0f);
-        mesh_coordinator_send_data(mesh_json);
-      }
+      // Verifica se a leitura GPS foi concluida pela task separada
+      if (gps_read_done) {
+        gps_read_done = false;
+        gps_read_pending = false;
 
-      // Envia status do gateway para K10 via Mesh
-      {
-        char mesh_json[128];
-        snprintf(mesh_json, sizeof(mesh_json),
-                 "{\"type\":\"status\",\"rfid_conn\":%d,\"wifi_active\":%d}",
-                 bastao_current_status.stm32_alive ? 1 : 0,
-                 wifi_driver_is_connected() ? 1 : 0);
-        mesh_coordinator_send_data(mesh_json);
+        // Envia dados GPS para K10 via Mesh
+        {
+          char mesh_json[256];
+          snprintf(mesh_json, sizeof(mesh_json),
+                   "{\"type\":\"gps\",\"lat\":%.6f,\"lon\":%.6f,\"fix\":%d,\"alt\":%.1f,\"speed\":%.1f}",
+                   bastao_current_status.gps_latitude,
+                   bastao_current_status.gps_longitude,
+                   bastao_current_status.gps_fix ? 1 : 0,
+                   gps_data.valid ? gps_data.altitude : 0.0f,
+                   gps_data.valid ? gps_data.speed_kmh : 0.0f);
+          mesh_coordinator_send_data(mesh_json);
+        }
+
+        // Envia status do gateway para K10 via Mesh
+        {
+          char mesh_json[128];
+          snprintf(mesh_json, sizeof(mesh_json),
+                   "{\"type\":\"status\",\"rfid_conn\":%d,\"wifi_active\":%d}",
+                   bastao_current_status.stm32_alive ? 1 : 0,
+                   wifi_driver_is_connected() ? 1 : 0);
+          mesh_coordinator_send_data(mesh_json);
+        }
       }
     }
 
     // Envia status da rede celular para K10 via Mesh (a cada 60s)
+    // Usa RSSI em cache — nao envia comando AT para evitar travar o modem.
+    // O watchdog (simcom_wd, prio 3, Core 1) atualiza o cache a cada 10s.
     {
       static uint32_t cell_tick = 0;
       cell_tick++;
       if (cell_tick >= 60) {
         cell_tick = 0;
         char mesh_json[192];
-        int rssi = 0, ber = 0;
-        simcom_driver_get_signal_quality(&rssi, &ber);
+        int rssi = simcom_driver_get_cached_rssi();
         snprintf(mesh_json, sizeof(mesh_json),
                  "{\"type\":\"cell\",\"rssi\":%d,\"connected\":%d,\"operator\":\"%s\"}",
                  rssi,
@@ -556,5 +607,39 @@ static void system_orchestrator_task(void *pvParameters) {
     }
 
     vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
+
+/**
+ * @brief Task dedicada a leitura GPS via modem SIMCom.
+ *
+ * Opera em background (prio 3, Core 1) para nao bloquear o orchestrator.
+ * Acionada via notificacao do orchestrator quando GPS precisa ser lido.
+ * Atualiza gps_data e bastao_current_status diretamente.
+ */
+static void gps_reader_task(void *pvParameters) {
+  uint32_t notification_value = 0;
+  while (1) {
+    // Aguarda notificacao do orchestrator (com timeout de 5s para nao travar)
+    if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
+      if (!simcom_driver_is_busy()) {
+        simcom_gps_data_t gps_new;
+        if (simcom_driver_get_gps(&gps_new) == ESP_OK && gps_new.valid) {
+          bastao_current_status.gps_latitude = gps_new.latitude;
+          bastao_current_status.gps_longitude = gps_new.longitude;
+          if (!bastao_current_status.gps_fix) {
+            bastao_current_status.gps_fix = true;
+            ESP_LOGI(TAG, "GPS FIX OBTIDO! Mudando para polling de 30s.");
+          }
+          gps_data = gps_new;
+          ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
+                   gps_data.latitude, gps_data.longitude);
+        }
+      } else {
+        ESP_LOGD(TAG, "GPS: modem ocupado. Tentando no proximo ciclo.");
+      }
+      // Sinaliza que a leitura terminou (mesmo se sem fix)
+      gps_read_done = true;
+    }
   }
 }

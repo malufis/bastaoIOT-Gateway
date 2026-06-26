@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <stdarg.h>
 
 static const char *TAG = "ESP_LOGGER";
 
@@ -29,6 +30,9 @@ static TaskHandle_t telnet_task_handle = NULL;
 static void log_processor_task(void *pvParameters);
 
 static int telnet_server_sock = -1;
+
+/** @brief Ponteiro para o vprintf original (UART) antes do hook do Telnet. */
+static int (*s_orig_vprintf)(const char *, va_list) = NULL;
 static int telnet_client_socks[LOG_MAX_CLIENTS];
 static volatile bool telnet_running = false;
 
@@ -95,6 +99,43 @@ static void broadcast_to_telnet(const char *formatted_msg) {
     }
 }
 
+/**
+ * @brief Hook do vprintf para capturar TODOS os logs do ESP-IDF e redirecionar
+ *        para os clientes Telnet + UART serial original.
+ *
+ * @param[in] fmt  String de formato ja processada pelo ESP-IDF
+ *                 (ex: "I (1234) TAG: mensagem\n")
+ * @param[in] args Argumentos da lista varargs
+ * @return int Numero de caracteres escritos
+ */
+static int telnet_vprintf(const char *fmt, va_list args) {
+    char buf[384];
+    va_list args_copy;
+    va_copy(args_copy, args);
+    int len = vsnprintf(buf, sizeof(buf), fmt, args);
+
+    // Envia para todos os clientes Telnet conectados
+    if (len > 0 && telnet_running) {
+        // Remove o \n final que o ESP-IDF ja adiciona, troca por \r\n (padrao Telnet)
+        if (buf[len - 1] == '\n') {
+            buf[len - 1] = '\0';
+            len--;
+        }
+        if (len > 0) {
+            broadcast_to_telnet(buf);
+            broadcast_to_telnet("\r\n");
+        }
+    }
+
+    // Mantem a saida UART original via o vprintf salvo
+    if (s_orig_vprintf) {
+        s_orig_vprintf(fmt, args_copy);
+    }
+
+    va_end(args_copy);
+    return len;
+}
+
 /*
 static void broadcast_to_ble(const char *formatted_msg) {
     // Sera integrado com ble_mobile_notify_log() posteriormente
@@ -118,11 +159,16 @@ esp_err_t esp_logger_init(void) {
     msg_count = 0;
     dropped_count = 0;
 
-    BaseType_t ret = xTaskCreate(log_processor_task, "log_processor", 4096, NULL, 3, NULL);
+    BaseType_t ret = xTaskCreatePinnedToCore(log_processor_task, "log_processor", 4096, NULL, 3, NULL, 1);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Falha ao criar task processadora de logs");
         return ESP_FAIL;
     }
+
+    // Registra o hook do vprintf para capturar TODOS os logs do ESP-IDF
+    // e redireciona-los para os clientes Telnet, mantendo a saida UART original
+    s_orig_vprintf = esp_log_set_vprintf(telnet_vprintf);
+    ESP_LOGI(TAG, "vprintf hook registrado. Logs ESP-IDF agora vao para Telnet + UART.");
 
     ESP_LOGI(TAG, "Logger wireless inicializado. Nivel: %s",
              level_strings[current_log_level]);
@@ -226,7 +272,7 @@ esp_err_t esp_logger_start_telnet(void) {
         return ESP_OK;
     }
 
-    BaseType_t ret = xTaskCreate(telnet_task, "telnet_logger", 4096, NULL, 3, &telnet_task_handle);
+    BaseType_t ret = xTaskCreatePinnedToCore(telnet_task, "telnet_logger", 6144, NULL, 3, &telnet_task_handle, 1);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Falha ao criar task Telnet");
         return ESP_FAIL;

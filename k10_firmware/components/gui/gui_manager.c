@@ -193,7 +193,7 @@ static void create_screen_readings(lv_obj_t * parent) {
     lv_obj_set_style_text_color(lbl_time_label, lv_color_white(), 0);
 
     lbl_gps_coords = lv_label_create(center);
-    lv_label_set_text(lbl_gps_coords, "GPS NÃO SINCRONIZADO");
+    lv_label_set_text(lbl_gps_coords, "GPS NAO SINCRONIZADO");
     lv_obj_set_style_text_color(lbl_gps_coords, lv_palette_main(LV_PALETTE_RED), 0);
     lv_obj_set_style_text_align(lbl_gps_coords, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -536,7 +536,7 @@ void gui_manager_update_gps(double latitude, double longitude, uint8_t fix) {
                 lv_obj_set_style_text_color(icon_gps, COLOR_EMERALD, 0);
             }
         } else {
-            lv_label_set_text(lbl_gps_coords, "GPS NÃO SINCRONIZADO");
+            lv_label_set_text(lbl_gps_coords, "GPS NAO SINCRONIZADO");
             lv_obj_set_style_text_color(lbl_gps_coords, lv_palette_main(LV_PALETTE_RED), 0);
             if (icon_gps) {
                 lv_obj_set_style_text_color(icon_gps, lv_palette_main(LV_PALETTE_RED), 0);

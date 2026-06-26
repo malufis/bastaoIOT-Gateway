@@ -96,16 +96,16 @@ O firmware do ESP32 é construído sobre o ESP-IDF v5.x com uma estrutura multit
   4. Transmite a mensagem para a Tela K10.
 
 ### 2.4. Task Cellular & SIMCom 7663E
-* **Objetivo:** Estabelecer a conectividade de dados e enviar telemetria para a nuvem.
+* **Objetivo:** Estabelecer a conectividade de dados celular 4G e enviar telemetrias/alertas para a nuvem utilizando o cliente MQTT embutido do próprio modem, sem o uso de pilha PPP.
 * **Funcionamento:**
-  1. Inicializa a comunicação serial com o modem SIMCom 7663E.
-  2. Executa a pilha PPP (Point-to-Point Protocol) para subir a interface IP de rede a nível de sistema operacional (ESP-NETIF).
-  3. Inicializa o cliente MQTT nativo associado à interface PPP recém-criada.
-  4. Conecta-se de forma segura (SSL/TLS) ao broker MQTT na nuvem.
-  5. Consome dados da fila de envio celular e os publica nos tópicos dedicados do broker.
-  6. Modulo SIM7663E gerencia a rede celular, enviando dados para o broker MQTT na nuvem e recebendo comandos de controle remoto.
-  7. O modulo SIM7663E possui dois slot de chip, permitindo o uso de duas operadoras diferentes.
-  8. O modulo SIM7663E possui GPS/GLONASS integrado, permitindo o rastreamento da localização do bastão.
+  1. Inicializa o modem por hardware via pulso no pino PWRKEY (GPIO4) e configura a comunicação serial a 115200 bps.
+  2. Inicia uma tarefa em segundo plano (`simcom_uart_rx_task`) para escuta contínua de caracteres da serial e processamento de URCs de entrada (como `+CMQTTDELIVER` para mensagens de subscrição e `+CMQTTCONNLOST` para desconexões).
+  3. Configura a APN de rede celular e executa a máquina de estados para registrar o modem na rede (através de comandos síncronos sincronizados por semáforos).
+  4. Ativa o motor MQTT integrado do SIMCom (`AT+CMQTTSTART`), cria a sessão do cliente e conecta-se diretamente ao broker via comandos AT (`AT+CMQTTCONNECT`).
+  5. Subscreve-se nos tópicos de comandos e de configuração do bastão e direciona os payloads recebidos ao parser de comandos JSON do sistema.
+  6. Realiza o envio de telemetria e posições de satélite executando sequências AT de publicação (`AT+CMQTTTOPIC`, `AT+CMQTTPAYLOAD` e `AT+CMQTTPUB`).
+  7. O modem SIMCom possui suporte a Dual SIM Single Standby (DSSS) gerenciado ativamente via comando proprietário `AT*SELECTSIMSLOT`, trocando de slot automaticamente em caso de falha de chip.
+  8. O receptor GPS/GLONASS integrado no modem é ativado por hardware e consultado a cada 30 segundos diretamente via comandos AT síncronos (`AT+CGNSSINFO`), sem necessidade de suspender fluxos de dados.
 
 ### 2.5. Task Bluetooth (BLE) Mobile Connection
 * **Objetivo:** Estabelecer uma conexão Bluetooth segura com um aplicativo de celular para envio bidirecional de dados de configuração e de negócios do bastão.
@@ -118,23 +118,26 @@ O firmware do ESP32 é construído sobre o ESP-IDF v5.x com uma estrutura multit
   4. **Armazenamento Local**: O ESP32 valida esses dados e os grava na memória flash não-volátil (NVS/SPIFFS), permitindo a associação e exibição local dessas informações conforme as tags RFID correspondentes são lidas.
 
 ### 2.6. Rotina de Atualização de Firmware Remota (OTA - Over-the-Air)
-* **Objetivo:** Permitir a atualização segura do firmware do ESP32 remotamente utilizando conexão Wi-Fi (quando disponível em base/curral) ou conexão celular 4G via modem SIMCom 7663E.
+* **Objetivo:** Permitir a atualização segura do firmware do ESP32 Coordenador remotamente.
+* **Escopo:** ESP32 Coordenador ✅ | K10 ❌ (apenas USB/serial) | Modem SIMCom ❌ (não implementado)
 * **Funcionamento:**
-  1. **Disparo do OTA**: A atualização pode ser disparada via comando MQTT/HTTPS contendo a URL do novo binário de firmware e a assinatura de segurança, ou por verificação periódica em um servidor seguro.
-  2. **Seleção de Interface de Conectividade**:
-     * **Wi-Fi**: Priorizada quando o bastão estiver na base carregadora ou curral com cobertura de rede Wi-Fi local configurada, poupando dados celulares.
-     * **Celular 4G (SIMCom 7663E)**: Utilizada em campo por meio da interface de rede PPP ativa sob comando ou verificação programada.
+  1. **Disparo do OTA**: A atualização é disparada via comando MQTT no tópico `id/{MAC}/cmd` com payload `{"cmd":"ota","url":"https://..."}`.
+  2. **Restrição de Conectividade**:
+     * **Wi-Fi apenas**: O componente `esp_https_ota` exige a pilha TCP/IP LwIP, disponível apenas quando o Wi-Fi está ativo (modos `WIFI_ONLY`, `WIFI_CELLULAR` ou `AUTO` com Wi-Fi conectado).
+     * **Celular (4G)**: Não suportado — o modem SIMCom gerencia o TCP/IP internamente via comandos AT, sem interface IP local para o `esp_https_ota`.
   3. **Processo de Gravação Seguro (ESP HTTPS OTA)**:
-     * O download é efetuado via HTTPS (`esp_https_ota`), exigindo verificação de certificado SSL e gravação alternada na partição inativa (`ota_0`/`ota_1`).
-     * Após o download completo, o ESP32 realiza a validação de integridade (SHA-256) do binário.
+     * O download é efetuado via HTTPS (`esp_https_ota`), com verificação de certificado SSL via `esp_crt_bundle_attach`.
+     * A gravação ocorre na partição inativa (`ota_0` ←→ `ota_1`), preservando o firmware anterior para rollback.
+     * Partições: `ota_0` (1728K) e `ota_1` (1728K) + `otadata` (8K).
   4. **Rollback de Segurança**:
-     * Se o novo firmware falhar em inicializar ou perder conectividade com a rede de verificação, o gerenciador de boot (App Rollback) reverte automaticamente para a partição anterior estável.
+     * No boot, `ota_manager_init()` chama `esp_ota_mark_app_valid_cancel_rollback()` para confirmar que o firmware é estável.
+     * Se o ESP32 reiniciar 2x sem validar, o bootloader reverte para a partição anterior automaticamente.
 
 ### 2.7. Mecanismo de Cache e Armazenamento Offline (Spooler de Telemetria)
 * **Objetivo:** Prevenir a perda de dados de leituras de tags e eventos de telemetria em áreas remotas sem cobertura de conectividade Wi-Fi ou celular (4G).
 * **Funcionamento:**
   1. **Detecção de Estado de Conectividade**:
-     * O sistema monitora constantemente o status da conexão à rede (Wi-Fi e PPP Celular) e o estado de conexão do cliente MQTT.
+     * O sistema monitora constantemente o status da conexão à rede (Wi-Fi e o cliente MQTT embutido do celular) e o estado de envio do publicador MQTT.
      * Se as interfaces de rede estiverem desconectadas ou o Broker MQTT inacessível, o sistema direciona as mensagens para o modo **Offline**.
   2. **Persistência em Fila Local (Spooling)**:
      * No modo **Offline**, os JSONs criptografados da fila de dados são gravados no sistema de arquivos flash local (**LittleFS** ou **SPIFFS** do ESP32).

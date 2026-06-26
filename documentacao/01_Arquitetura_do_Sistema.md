@@ -93,6 +93,17 @@ ESP32 - dispatcher_task (Core 0, prio 6)
 
 Toda a pilha de rede e gerenciada pelo modem via comandos AT nativos. O ESP32 envia comandos AT via UART serial.
 
+### GPS (Multi-constelacao)
+
+O GPS opera em **Cold Start** (`AT+CGNSSPWR=1`, sem salvamento de efemerides na flash).
+
+- **Polling adaptativo:**
+  - Sem fix: a cada **2 segundos** (busca rapida)
+  - Com fix: a cada **30 segundos** (economia)
+- **Task separada:** `gps_reader_task` (prio 3, Core 1) executa `simcom_driver_get_gps()` em background, acionada via `xTaskNotify`. O `system_orchestrator` nunca bloqueia.
+- **Timeouts:** Comando `CGNSSPWR` timeout 9s, `CGPSINFO` timeout 9s, `CGNSSINFO` timeout 9s.
+- **Formato principal:** `AT+CGPSINFO` (NMEA DDMM.MMMM), fallback `AT+CGNSSINFO`.
+
 ### Boot Sequence
 ```
 AT -> ATE1 -> CFUN=0 -> CFUN=1,1 -> SELECTSIMSLOT -> CPIN? -> CICCID

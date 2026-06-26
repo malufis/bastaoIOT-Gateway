@@ -1055,13 +1055,10 @@ esp_err_t simcom_driver_get_gps(simcom_gps_data_t *gps_out) {
 esp_err_t simcom_driver_gps_power_on(void) {
     if (gps_powered_on) return ESP_OK;
 
-    ESP_LOGI(TAG, "[GPS] Ativando receptor GNSS celular (Hot Start AP_Flash)...");
-    esp_err_t err = at_send_cmd("AT+CGNSSPWR=1,1\r\n", "OK", NULL, 0, 9000);
+    ESP_LOGI(TAG, "[GPS] Ativando receptor GNSS celular (Cold Start)...");
+    esp_err_t err = at_send_cmd("AT+CGNSSPWR=1\r\n", "OK", NULL, 0, 9000);
     if (err != ESP_OK) {
-        err = at_send_cmd("AT+CGNSSPWR=1\r\n", "OK", NULL, 0, 9000);
-        if (err != ESP_OK) {
-            err = at_send_cmd("AT+CGPS=1\r\n", "OK", NULL, 0, 9000);
-        }
+        err = at_send_cmd("AT+CGPS=1\r\n", "OK", NULL, 0, 9000);
     }
 
     if (err == ESP_OK) {
@@ -1074,13 +1071,10 @@ esp_err_t simcom_driver_gps_power_on(void) {
 esp_err_t simcom_driver_gps_power_off(void) {
     if (!gps_powered_on) return ESP_OK;
 
-    ESP_LOGI(TAG, "[GPS] Desligando receptor GNSS (Salva efemerides em Flash)...");
-    esp_err_t err = at_send_cmd("AT+CGNSSPWR=0,1\r\n", "OK", NULL, 0, 9000);
+    ESP_LOGI(TAG, "[GPS] Desligando receptor GNSS...");
+    esp_err_t err = at_send_cmd("AT+CGNSSPWR=0\r\n", "OK", NULL, 0, 9000);
     if (err != ESP_OK) {
-        err = at_send_cmd("AT+CGNSSPWR=0\r\n", "OK", NULL, 0, 9000);
-        if (err != ESP_OK) {
-            err = at_send_cmd("AT+CGPS=0\r\n", "OK", NULL, 0, 9000);
-        }
+        err = at_send_cmd("AT+CGPS=0\r\n", "OK", NULL, 0, 9000);
     }
 
     if (err == ESP_OK) {

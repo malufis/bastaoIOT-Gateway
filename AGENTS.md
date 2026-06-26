@@ -1289,6 +1289,28 @@ Orchestrator (1s loop):            GPS Reader Task (background):
 
 ---
 
+---
+
+## Sessão 45 — GPS: Cold Start (Hot Start nao funcionava)
+**Data:** 2026-06-26
+**Objetivo:** Reverter GPS de Hot Start (AP_Flash) para Cold Start por incompatibilidade com o modem A7670C/A7663E.
+
+### Problema
+- `AT+CGNSSPWR=1,1` (Hot Start com AP_Flash) nao funcionava consistentemente no modem
+- GPS nunca obtinha fix porque as efemerides nao eram salvas/carregadas corretamente
+- Modo Hot Start exige chip GPS ASR1601 com suporte a AP_Flash, mas o comportamento varia entre firmware
+
+### Solucao
+- `simcom_driver_gps_power_on()`: `AT+CGNSSPWR=1,1` → `AT+CGNSSPWR=1` (Cold Start)
+- `simcom_driver_gps_power_off()`: `AT+CGNSSPWR=0,1` → `AT+CGNSSPWR=0`
+- Removido fallback triplo: agora tenta CGNSSPWR=1, se falhar → CGPS=1
+
+### Arquivos Modificados
+- `esp32_firmware/main/simcom_driver.c`: `simcom_driver_gps_power_on()` e `simcom_driver_gps_power_off()`
+- `documentacao/01_Arquitetura_do_Sistema.md`: Adicionada secao GPS com detalhes de cold start e polling
+
+---
+
 ## Referência Rápida de Comandos
 
 ```powershell

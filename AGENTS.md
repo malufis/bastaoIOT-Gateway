@@ -1459,6 +1459,85 @@ Orchestrator (1s loop):            GPS Reader Task (background):
 
 ---
 
+## Sessão 47 — GPS Acelerado via A-GPS (AT+CAGPS) + Multi-Constelação
+**Data:** 2026-07-07
+**Objetivo:** Acelerar fix GPS de 30s+ (cold start puro) para 2-5s usando dados de assistência do servidor AGNSS via 4G.
+
+### Problema Raiz
+- GPS operava em **Cold Start puro** (`AT+CGNSSPWR=1`) sem dados de efeméride/almanac
+- Chip GPS ASR1601 precisava baixar efeméride dos satélites diretamente via RF (lento: 30s+ outdoor, minutos indoor)
+- Modo de constelação limitado a GPS+QZSS (modo 3), com menos satélites disponíveis
+- Comando `AT+CAGPS` (download de dados AGNSS via socket TCP) **não era utilizado**
+
+### Solução: 3 Melhorias Combinadas
+
+**1. A-GPS via AT+CAGPS (download de efeméride via 4G):**
+- Novo comando `AT+CAGPS` conecta ao servidor AGNSS via socket TCP e baixa dados de efeméride/almanac
+- Dados injetados no chip GPS → fix em 2-5s em vez de 30s+
+- Timeout: 9000ms
+- Códigos de erro: 101-105 (socket, servidor, conexão, write, read)
+
+**2. Multi-constelação via AT+CGNSSMODE=7:**
+- Modo 7: GPS L1 + BDS B1 + GLONASS + SBAS + QZSS (mais satélites = fix mais rápido)
+- Fallback para modo 3 (GPS+QZSS) se modem não suportar modo 7
+- A7670C-BASS_DTU usa chip ASR1601 — verificar suporte via AT+CGNSSMODE=?
+
+**3. URC +CGNSSPWR:READY!:**
+- Chip GPS ASR1601 emite URC `+CGNSSPWR:READY!` quando inicializa (~9s após power on)
+- Antes de enviar AT+CAGPS, aguarda este URC (timeout 15s)
+- Handler adicionado ao `process_simcom_line()`
+
+### Fluxo Novo (com A-GPS)
+```
+Boot → simcom_driver_init() → AT+CGNSSPWR=1 (power on GNSS)
+  → URC +CGNSSPWR:READY! (~9s) → gnss_ready = true
+  → simcom_driver_configure_apn() → 4G data ativa
+  → simcom_driver_download_agps():
+      1. Aguarda gnss_ready (se nao setado pelo URC)
+      2. AT+CGNSSMODE=7 (GPS+BDS+GLONASS)
+      3. AT+CAGPS (download efeméride via socket TCP, ~2-5s)
+      4. AT+CGPSCOLD (reinicia GPS com dados de assistencia)
+  → GPS fix em 2-5s (vs 30s+ antes)
+```
+
+### Modificações
+
+**`esp32_firmware/main/simcom_driver.c`:**
+- Adicionadas variáveis estáticas `gnss_ready` e `agps_downloaded`
+- Handler URC `+CGNSSPWR:READY!` em `process_simcom_line()`
+- `simcom_driver_gps_power_on()`: reset `gnss_ready = false` no power on
+- `simcom_driver_gps_power_off()`: reset `gnss_ready = false` no power off
+- Nova função `simcom_driver_configure_gnss()`: AT+CGNSSMODE=7 com fallback para 3
+- Nova função `simcom_driver_download_agps()`: sequência completa agps (aguarda READY → config constelações → download → cold start)
+- Watchdog reconnection: adicionado `simcom_driver_download_agps()` após reconexão APN
+
+**`esp32_firmware/main/simcom_driver.h`:**
+- Protótipos: `simcom_driver_configure_gnss()`, `simcom_driver_download_agps()`
+- Documentação Doxygen completa com fluxo e timeout
+
+**`esp32_firmware/main/main.c`:**
+- `app_main()`: chamada `simcom_driver_download_agps()` após `simcom_driver_configure_apn()` bem-sucedida
+- Log: `[GPS] Configurando A-GPS para fix acelerado...`
+
+### Comandos AT Envolvidos
+| Comando | Função | Timeout |
+|---------|--------|---------|
+| `AT+CGNSSPWR=1` | Liga GNSS (cold start) | 9000ms |
+| `AT+CGNSSPWR=0` | Desliga GNSS | 9000ms |
+| `AT+CGNSSMODE=7` | GPS+BDS+GLONASS+SBAS+QZSS | 5000ms |
+| `AT+CGNSSMODE=3` | GPS+QZSS (fallback) | 5000ms |
+| `AT+CAGPS` | Download dados AGNSS via TCP | 9000ms |
+| `AT+CGPSCOLD` | Cold start com dados injetados | 5000ms |
+
+### Lições Aprendidas
+- **ASR1601 não suporta AP_Flash hot start** — apenas ASR1603/1803S
+- **`+CGNSSPWR:READY!` pode demorar até 9s** — nunca enviar comandos GNSS antes dele
+- **`AT+CAGPS` requer 4G com PDP context ativo** — sem dados, retorna erro 101-105
+- **CGNSSMODE=7 pode não existir em todos os firmwares** — fallback para modo 3 é seguro
+- **A-GPS não precisa reiniciar o módulo** — basta injetar dados e fazer cold start
+
+---
+
 ## Referência Rápida de Comandos
 
 ```powershell

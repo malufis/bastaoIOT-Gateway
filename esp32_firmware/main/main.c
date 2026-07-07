@@ -454,6 +454,15 @@ void app_main(void) {
       // Atualiza dados SIM com operadora e sinal recem-coletados
       ble_mobile_save_sim_data();
 
+      // Acelera fix GPS: baixa dados de efeméride do servidor AGNSS via 4G
+      // (AT+CAGPS). Com dados AGNSS, fix ocorre em 2-5s em vez de 30s+.
+      ESP_LOGI(TAG, "[GPS] Configurando A-GPS para fix acelerado...");
+      if (simcom_driver_download_agps() == ESP_OK) {
+        ESP_LOGI(TAG, "[GPS] A-GPS configurado com sucesso.");
+      } else {
+        ESP_LOGW(TAG, "[GPS] A-GPS falhou. GPS usara cold start puro (30s+).");
+      }
+
       if (!wifi_driver_is_connected()) {
         if (simcom_driver_mqtt_connect(&active_mqtt_config) == ESP_OK) {
           ESP_LOGI(TAG, "Conectividade celular MQTT ativa.");

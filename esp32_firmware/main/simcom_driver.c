@@ -57,6 +57,12 @@ static char modem_imei[32] = "bastao-esp-default";
 /** @brief Flag indicando se o GPS foi ativado fisicamente no modem. */
 static bool gps_powered_on = false;
 
+/** @brief Flag indicando se o chip GNSS esta pronto (URC +CGNSSPWR:READY! recebido). */
+static bool gnss_ready = false;
+
+/** @brief Flag indicando se dados AGPS foram baixados com sucesso. */
+static bool agps_downloaded = false;
+
 /** @brief APN configurada no sistema. */
 static simcom_apn_config_t stored_apn = {0};
 
@@ -239,6 +245,10 @@ static void process_simcom_line(const char *line) {
         }
     }
     // 2. Outras URCs do MQTT Celular
+    else if (strncmp(line, "+CGNSSPWR:READY!", 15) == 0) {
+        gnss_ready = true;
+        ESP_LOGI(TAG, "URC GNSS: Chip GNSS pronto (+CGNSSPWR:READY!).");
+    }
     else if (strncmp(line, "+CMQTTCONNLOST:", 15) == 0) {
         ESP_LOGW(TAG, "URC MQTT: Conexao perdida com o broker.");
         cellular_mqtt_connected = false;
@@ -1063,6 +1073,7 @@ esp_err_t simcom_driver_gps_power_on(void) {
     if (gps_powered_on) return ESP_OK;
 
     ESP_LOGI(TAG, "[GPS] Ativando receptor GNSS celular (Cold Start)...");
+    gnss_ready = false;
     esp_err_t err = at_send_cmd("AT+CGNSSPWR=1\r\n", "OK", NULL, 0, 9000);
     if (err != ESP_OK) {
         err = at_send_cmd("AT+CGPS=1\r\n", "OK", NULL, 0, 9000);
@@ -1070,7 +1081,8 @@ esp_err_t simcom_driver_gps_power_on(void) {
 
     if (err == ESP_OK) {
         gps_powered_on = true;
-        ESP_LOGI(TAG, "[GPS] GNSS ligado com sucesso.");
+        ESP_LOGI(TAG, "[GPS] GNSS ligado com sucesso. Aguardando READY!...");
+        /* Nao bloqueia aqui — gnss_ready sera setado pelo URC process_simcom_line() */
     }
     return err;
 }
@@ -1086,8 +1098,79 @@ esp_err_t simcom_driver_gps_power_off(void) {
 
     if (err == ESP_OK) {
         gps_powered_on = false;
+        gnss_ready = false;
         ESP_LOGI(TAG, "[GPS] GNSS desligado.");
     }
+    return err;
+}
+
+esp_err_t simcom_driver_configure_gnss(void) {
+    if (!gps_powered_on) {
+        ESP_LOGW(TAG, "[GNSS] Nao configurado: GNSS desligado.");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "[GNSS] Configurando constelacoes (CGNSSMODE=7: GPS+BDS+GLONASS)...");
+    esp_err_t err = at_send_cmd("AT+CGNSSMODE=7\r\n", "OK", NULL, 0, 5000);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "[GNSS] Constelacoes configuradas: GPS+BDS+GLONASS.");
+    } else {
+        ESP_LOGW(TAG, "[GNSS] CGNSSMODE=7 falhou (modem pode nao suportar). Tentando modo 3...");
+        err = at_send_cmd("AT+CGNSSMODE=3\r\n", "OK", NULL, 0, 5000);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "[GNSS] Constelacoes configuradas: GPS+QZSS (modo limitado).");
+        }
+    }
+    return err;
+}
+
+esp_err_t simcom_driver_download_agps(void) {
+    if (!gps_powered_on) {
+        ESP_LOGW(TAG, "[AGPS] GNSS desligado. Ligando primeiro...");
+        esp_err_t e = simcom_driver_gps_power_on();
+        if (e != ESP_OK) return e;
+    }
+
+    /* Aguarda chip GNSS pronto (URC +CGNSSPWR:READY!) — timeout 15s */
+    if (!gnss_ready) {
+        ESP_LOGI(TAG, "[AGPS] Aguardando chip GNSS ficar pronto (+CGNSSPWR:READY!)...");
+        uint32_t start = xTaskGetTickCount();
+        while (!gnss_ready && (xTaskGetTickCount() - start) < pdMS_TO_TICKS(15000)) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        if (!gnss_ready) {
+            ESP_LOGW(TAG, "[AGPS] Timeout aguardando READY! do GNSS (15s). Continuando...");
+        }
+    }
+
+    /* Configura constelacoes (GPS+BDS+GLONASS para mais satelites) */
+    simcom_driver_configure_gnss();
+
+    /* Baixa dados de assistencia do servidor AGNSS via 4G */
+    ESP_LOGI(TAG, "[AGPS] Baixando dados de assistencia GNSS (AT+CAGPS)...");
+    char agps_resp[AT_RESPONSE_BUF_SIZE];
+    esp_err_t err = at_send_cmd("AT+CAGPS\r\n", "+AGPS:", agps_resp, sizeof(agps_resp), 9000);
+
+    if (err == ESP_OK) {
+        if (strstr(agps_resp, "+AGPS:success.") != NULL) {
+            agps_downloaded = true;
+            ESP_LOGI(TAG, "[AGPS] Dados AGNSS baixados com SUCESSO. GPS deve obter fix muito mais rapido.");
+            /* Reinicia GPS com dados de assistencia (Cold Start com efeméride) */
+            at_send_cmd("AT+CGPSCOLD\r\n", "OK", NULL, 0, 5000);
+        } else {
+            ESP_LOGW(TAG, "[AGPS] Resposta inesperada: %s", agps_resp);
+        }
+    } else {
+        /* Analisa codigo de erro */
+        int err_code = 0;
+        char *p = strstr(agps_resp, "+AGPS:");
+        if (p) {
+            err_code = atoi(p + 6);
+        }
+        ESP_LOGW(TAG, "[AGPS] Falha ao baixar dados AGNSS (erro=%d, resp=%s). GPS usa cold start puro.",
+                 err_code, agps_resp);
+    }
+
     return err;
 }
 
@@ -1693,8 +1776,12 @@ static void simcom_watchdog_task(void *pvParameters) {
             connection_attempt_start = xTaskGetTickCount();
             if (simcom_driver_init() == ESP_OK) {
                 if (stored_apn.apn[0] != '\0') {
-                    if (simcom_driver_configure_apn(&stored_apn) == ESP_OK && mqtt_config_loaded) {
-                        simcom_driver_mqtt_connect(&stored_mqtt_config);
+                    if (simcom_driver_configure_apn(&stored_apn) == ESP_OK) {
+                        /* Re-baixa dados AGPS apos reconexao 4G */
+                        simcom_driver_download_agps();
+                        if (mqtt_config_loaded) {
+                            simcom_driver_mqtt_connect(&stored_mqtt_config);
+                        }
                     }
                 }
             }

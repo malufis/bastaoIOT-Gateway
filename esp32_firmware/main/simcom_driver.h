@@ -215,6 +215,31 @@ esp_err_t simcom_driver_gps_power_on(void);
 esp_err_t simcom_driver_gps_power_off(void);
 
 /**
+ * @brief Configura as constelacoes GNSS (GPS, GLONASS, BDS, Galileo).
+ * @details Envia AT+CGNSSMODE=7 (GPS+BDS+GLONASS) para maximizar numero de satelites.
+ *          Se o modem nao suportar modo 7, fallback para modo 3 (GPS+QZSS).
+ *          Deve ser chamado apos o GNSS estar ligado e pronto (+CGNSSPWR:READY!).
+ * @return esp_err_t ESP_OK se configurado.
+ */
+esp_err_t simcom_driver_configure_gnss(void);
+
+/**
+ * @brief Baixa dados de assistencia GNSS (A-GPS) do servidor AGNSS via 4G.
+ * @details Sequencia completa:
+ *          1. Liga GNSS se nao estiver ativo
+ *          2. Aguarda chip pronto (+CGNSSPWR:READY!, ~9s no ASR1601)
+ *          3. Configura constelacoes (GPS+BDS+GLONASS)
+ *          4. Envia AT+CAGPS para baixar efeméride/almanac via socket TCP
+ *          5. Executa AT+CGPSCOLD para reiniciar GPS com dados de assistencia
+ *
+ *          Com dados AGNSS, o fix GPS deve ocorrer em 2-5s em vez de 30s+.
+ *          Requer conexao 4G ativa (PDP context configurado).
+ *
+ * @return esp_err_t ESP_OK se dados baixados com sucesso.
+ */
+esp_err_t simcom_driver_download_agps(void);
+
+/**
  * @brief Inicia a task de monitoramento e reconexao automatica do modem.
  *
  * @param[in] priority Prioridade da tarefa FreeRTOS.

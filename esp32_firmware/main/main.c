@@ -638,6 +638,20 @@ static void system_orchestrator_task(void *pvParameters) {
       }
     }
 
+    // Atualiza cache de localizacao por torre celular (a cada 5 min)
+    // HTTP POST para Mozilla Location Service — NAO bloqueia o dispatcher.
+    // O resultado e usado pelo dispatcher quando GPS nao tem fix.
+    {
+      static uint32_t cell_loc_tick = 0;
+      cell_loc_tick++;
+      if (cell_loc_tick >= 300) {
+        cell_loc_tick = 0;
+        if (!bastao_current_status.gps_fix && !simcom_driver_is_busy()) {
+          simcom_driver_update_cell_tower_cache();
+        }
+      }
+    }
+
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }

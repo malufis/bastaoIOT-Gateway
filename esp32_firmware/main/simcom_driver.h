@@ -339,6 +339,16 @@ esp_err_t simcom_driver_get_cell_tower_location(double *lat, double *lon);
  */
 bool simcom_driver_is_cell_tower_valid(void);
 
+/**
+ * @brief Atualiza o cache de localizacao via torre celular (Mozilla Location Service).
+ * @details Faz HTTP POST assincrono para obter lat/lon aproximada.
+ *          Deve ser chamado periodicamente pelo orchestrator (ex: a cada 5 min).
+ *          Nao bloqueia o chamador — o HTTP roda na task do chamador.
+ *
+ * @return ESP_OK se localizacao obtida e cache atualizada.
+ */
+esp_err_t simcom_driver_update_cell_tower_cache(void);
+
 #ifdef __cplusplus
 }
 #endif

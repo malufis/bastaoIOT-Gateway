@@ -94,6 +94,11 @@ static int cached_cid = 0;
 static int cached_earfcn = 0;
 static bool cell_tower_valid = false;
 
+/* --- Cache de localizacao por torre celular (HTTP assincrono) --- */
+static double cached_cell_lat = 0.0;
+static double cached_cell_lon = 0.0;
+static bool cell_tower_location_valid = false;
+
 /* --- Prototipos de Funcoes Privadas --- */
 static esp_err_t at_send_cmd(const char *cmd, const char *expected_resp,
                              char *response_buf, size_t buf_size,
@@ -1202,9 +1207,19 @@ static esp_err_t query_cpsi_metrics(void) {
         }
 
         if (f_idx >= 15) {
-            cached_tac = atoi(fields[2]);
-            cached_cid = atoi(fields[3]);
+            int new_tac = atoi(fields[2]);
+            int new_cid = atoi(fields[3]);
             cached_earfcn = atoi(fields[4]);
+
+            /* Se a torre mudou (CID diferente), invalida cache de localizacao */
+            if (new_cid != cached_cid) {
+                cell_tower_location_valid = false;
+                ESP_LOGD(TAG, "[CELL] Torre mudou: CID %d -> %d. Cache de localizacao invalidado.",
+                         cached_cid, new_cid);
+            }
+
+            cached_tac = new_tac;
+            cached_cid = new_cid;
             cell_tower_valid = (cached_cid != 0);
             cached_rsrq = atoi(fields[11]);
             cached_rsrp = atoi(fields[12]);
@@ -1934,14 +1949,37 @@ void simcom_driver_set_suspended(bool suspend) {
 bool simcom_driver_is_suspended(void) { return cellular_suspended; }
 
 bool simcom_driver_has_location(void) {
-    /* Localizacao disponivel: GPS com fix OU torre celular valida */
-    return bastao_current_status.gps_fix || cell_tower_valid;
+    /* Localizacao disponivel: GPS com fix OU torre celular com localizacao em cache */
+    return bastao_current_status.gps_fix || cell_tower_location_valid;
 }
 
 esp_err_t simcom_driver_get_cell_tower_location(double *lat, double *lon) {
-    return cell_tower_get_location(lat, lon);
+    /* Retorna valor em cache (non-blocking). Cache e atualizado periodicamente. */
+    if (!cell_tower_location_valid || !cell_tower_valid) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    *lat = cached_cell_lat;
+    *lon = cached_cell_lon;
+    return ESP_OK;
 }
 
 bool simcom_driver_is_cell_tower_valid(void) {
     return cell_tower_valid;
+}
+
+esp_err_t simcom_driver_update_cell_tower_cache(void) {
+    /* Nao faz nada se nao tem torre valida ou se GPS ja tem fix */
+    if (!cell_tower_valid || bastao_current_status.gps_fix) {
+        return ESP_OK;
+    }
+
+    double lat = 0.0, lon = 0.0;
+    esp_err_t err = cell_tower_get_location(&lat, &lon);
+    if (err == ESP_OK) {
+        cached_cell_lat = lat;
+        cached_cell_lon = lon;
+        cell_tower_location_valid = true;
+        ESP_LOGI(TAG, "[CELL_CACHE] Localizacao torre celular atualizada: %.6f, %.6f", lat, lon);
+    }
+    return err;
 }

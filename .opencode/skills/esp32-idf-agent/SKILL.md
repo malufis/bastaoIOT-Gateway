@@ -7,11 +7,11 @@ description: >
   BLE, Wi-Fi, PPP e FreeRTOS Tasks.
 ---
 
-# Agente ESP32-IDF v5.5.2 — Projeto Bastao
+# Agente ESP32-IDF v5.4.2 — Projeto Bastao
 
 Este agente governa o desenvolvimento, depuracao e manutencao do firmware ESP32
 do projeto **Bastao-ESP** (`d:/git/Bastao/Bastao-ESP/esp32_firmware`), utilizando
-o **ESP-IDF v5.5.2** como framework exclusivo.
+o **ESP-IDF v5.4.2** como framework exclusivo.
 
 ---
 

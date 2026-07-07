@@ -38,7 +38,9 @@ BLE Mesh ── display K10
 ## Funcionalidades Principais
 
 - ✅ Leitura RFID LF (WL-134) e UHF (YRM100) com deduplicação
-- ✅ GPS/GLONASS/BeiDou/Galileo (multi-constelação)
+- ✅ **A-GPS:** Fix GPS acelerado (2-5s) via download de efeméride pelo 4G (AT+CAGPS)
+- ✅ **Triangulação Celular:** Fallback via Mozilla Location Service com cache assíncrono (non-blocking)
+- ✅ GPS/GLONASS/BDS multi-constelação (AT+CGNSSMODE=7)
 - ✅ MQTT nativo via comandos AT (sem PPP)
 - ✅ Dual SIM com troca inteligente por sinal
 - ✅ Cache offline (SPIFFS) com sincronização automática
@@ -53,8 +55,9 @@ BLE Mesh ── display K10
 - ✅ **Tela "BRINCO LIDO" (K10):** Exibição fullscreen com tag + auto-dismiss 3s
 - ✅ **SPIFFS Contador (K10):** Banco de tags diárias `/spiffs/tags/YYYY-MM-DD.json`
 - ✅ **Aba Histórico (K10):** Lista das últimas 20 tags lidas
-- ✅ **GPS Gate:** Publicação MQTT só com localização (GPS ou cell tower fallback)
-- ✅ **Triangulação Celular:** Fallback via Mozilla Location Service (TAC/CID/EARFCN)
+- ✅ **GPS Gate:** Publicação MQTT só com localização (GPS优先 → cell tower fallback com cache)
+- ✅ **A-GPS:** Fix inicial em 2-5s (vs 30s+ cold start puro)
+- ✅ **Cell Tower Cache:** Localização por torre em background, nunca bloqueia RFID
 - ⚠️ **OTA via 4G** não suportado (requer Wi-Fi)
 - ❌ **OTA na tela K10** não suportado (apenas USB/serial)
 

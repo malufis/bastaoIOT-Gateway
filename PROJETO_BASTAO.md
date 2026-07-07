@@ -96,12 +96,15 @@ O sistema utiliza **comandos AT puros** para toda comunicação com o modem SIMC
 
 | Task | Arquivo | Core | Prio | Stack | Função |
 |------|---------|------|------|-------|--------|
-| `stm32_uart_rx_task` | `stm32_uart.c` | 0 | 7 | 4096 | RX UART STM32, parse JSON |
-| `dispatcher_task` | `main.c` | 0 | 6 | 6144 | Processa RFID, criptografa, publica |
-| `main_loop` | `main.c` | 0 | 5 | - | Conectividade, GPS, heartbeat |
-| `simcom_rx` | `simcom_driver.c` | 1 | 5 | 4096 | RX UART modem, URC parsing |
-| `simcom_watchdog` | `simcom_driver.c` | 1 | 3 | 6144 | Watchdog SIMCom, SIM swap |
-| `cache_sync` | `offline_cache.c` | 1 | 3 | 4096 | Sincronização cache offline |
+| `dispatcher_task` | `main.c` | 0 | 6 | 6144 | Processa RFID, Mesh, enfileira MQTT |
+| `stm32_uart_rx` | `stm32_uart.c` | 1 | 6 | 5120 | RX UART STM32, parse JSON |
+| `simcom_rx` | `simcom_driver.c` | 1 | 6 | 4096 | RX UART modem, URC parsing |
+| `sys_orchestr` | `main.c` | 0 | 5 | 8192 | Conectividade, GPS, heartbeat, cell tower cache |
+| `mqtt_pub_task` | `mqtt_publisher.c` | 1 | 4 | 8192 | Publicação MQTT + criptografia AES |
+| `ota_task` | `ota_manager.c` | 1 | 4 | — | Atualização OTA (evento raro) |
+| `gps_reader` | `main.c` | 1 | 3 | 4096 | Leitura GPS em background (non-blocking) |
+| `simcom_wd` | `simcom_driver.c` | 1 | 3 | 6144 | Watchdog SIMCom, SIM swap |
+| `cache_sync_task` | `offline_cache.c` | 1 | 3 | 4096 | Sincronização cache offline |
 
 ### Fluxo de Dados (Tag RFID → Nuvem)
 
@@ -194,15 +197,19 @@ Boot:
      a. wait_for_network_registration (60s timeout)
      b. CGATT=1, CGDCONT, CGAUTH
      c. Lê operadora (COPS) e sinal (CSQ)
-  5. simcom_driver_mqtt_connect():
-     a. CMQTTREL + CMQTTSTOP (cleanup sessão anterior)
-     b. Delay 1s
-     c. CMQTTSTART, CMQTTACCQ
-     d. CMQTTWILLTOPIC + CMQTTWILLMSG
-     e. CMQTTCONNECT (30s + 15s URC)
-     f. SUBSCRIBE cmd + config (com delay 1s entre)
-  6. GPS ligado (CGNSSPWR=1)
-  7. Watchdog task inicia
+   5. simcom_driver_mqtt_connect():
+      a. CMQTTREL + CMQTTSTOP (cleanup sessão anterior)
+      b. Delay 1s
+      c. CMQTTSTART, CMQTTACCQ
+      d. CMQTTWILLTOPIC + CMQTTWILLMSG
+      e. CMQTTCONNECT (30s + 15s URC)
+      f. SUBSCRIBE cmd + config (com delay 1s entre)
+   6. GPS ligado (CGNSSPWR=1) + A-GPS:
+      a. Aguarda URC +CGNSSPWR:READY! (~9s no chip ASR1601)
+      b. AT+CGNSSMODE=7 (GPS+BDS+GLONASS) ou fallback modo 3
+      c. AT+CAGPS (download dados AGNSS via socket TCP 4G)
+      d. AT+CGPSCOLD (reinicia GPS com dados de assistência)
+   7. Watchdog task inicia
 ```
 
 ### Comandos AT Principais
@@ -253,8 +260,12 @@ Boot:
 #### GPS/GNSS
 | Comando | Função | Timeout |
 |---------|--------|---------|
-| `AT+CGNSSPWR=1` | Liga GNSS | 9s |
+| `AT+CGNSSPWR=1` | Liga GNSS (cold start) | 9s |
 | `AT+CGNSSPWR=0` | Desliga GNSS | 9s |
+| `AT+CGNSSMODE=7` | Multi-constelação (GPS+BDS+GLONASS) | 5s |
+| `AT+CGNSSMODE=3` | Constelação limitada (GPS+QZSS, fallback) | 5s |
+| `AT+CAGPS` | Download dados AGNSS via 4G TCP | 9s |
+| `AT+CGPSCOLD` | Cold start com dados de assistência | 5s |
 | `AT+CGPSINFO` | Posição GPS (NMEA DDMM.MMMM) | 9s |
 | `AT+CGNSSINFO` | Posição GNSS (formato variável) | 9s |
 
@@ -277,8 +288,53 @@ Boot:
 | `+CMQTTRXTOPIC:<idx>,<sub_t_len>` + dados | ✅ | Tópico da mensagem |
 | `+CMQTTRXPAYLOAD:<idx>,<sub_p_len>` + dados | ✅ | Payload da mensagem |
 | `+CMQTTRXEND:<idx>` | ✅ | Fim mensagem (processa) |
-| `+CGNSSPWR:READY!` | ⚠️ Logado mas não tratado | GNSS pronto |
+| `+CGNSSPWR:READY!` | ✅ `process_simcom_line()` → `gnss_ready=true` | GNSS pronto para comandos |
 | `+CREG:<stat>` | ⚠️ Não tratado como URC | Mudança de registro |
+
+## A-GPS (Assisted GPS)
+
+### Fluxo de Aceleração GPS
+O sistema utiliza A-GPS (`AT+CAGPS`) para baixar dados de efeméride/almanac do servidor AGNSS via conexão 4G, reduzindo o Time to First Fix (TTFF) de **30s+ para 2-5s**.
+
+```
+simcom_driver_init()
+  → gps_power_on() → AT+CGNSSPWR=1
+  → URC +CGNSSPWR:READY! → gnss_ready = true
+
+simcom_driver_configure_apn() → 4G com dados ativo
+
+simcom_driver_download_agps():
+  1. Aguarda gnss_ready (se não setado pelo URC, timeout 15s)
+  2. AT+CGNSSMODE=7 (GPS+BDS+GLONASS — mais satélites)
+     Fallback: AT+CGNSSMODE=3 (GPS+QZSS)
+  3. AT+CAGPS (download efeméride via socket TCP, 9s timeout)
+  4. AT+CGPSCOLD (reinicia GPS com dados de assistência)
+
+Resultado: Fix GPS em 2-5s vs 30s+ cold start puro
+```
+
+### Condições
+- Requer chip GNSS ASR1601 (A7670C-BASS_DTU) com URC `+CGNSSPWR:READY!`
+- Requer 4G com PDP context ativo (APN configurada)
+- Comandos GNSS só são enviados após READY! (~9s do power on)
+- A-GPS também é reexecutado na reconexão do watchdog
+
+## Cell Tower Location (Cache Assíncrono)
+
+A localização por torre celular (Mozilla Location Service) usa cache assíncrono para não bloquear o processamento RFID:
+
+```
+orchestrator_task (a cada 5min):
+  → simcom_driver_update_cell_tower_cache()
+  → HTTP POST MLS (10s) → salva lat/lon no cache
+
+dispatcher_task (a cada tag RFID):
+  → sem GPS fix → simcom_driver_get_cell_tower_location()
+  → retorna cache (~0ms, non-blocking)
+  → tag processada imediatamente
+```
+
+Cache é invalidado automaticamente quando o Cell ID (CID) muda (roaming/handover).
 
 ## Sincronização de Horário
 

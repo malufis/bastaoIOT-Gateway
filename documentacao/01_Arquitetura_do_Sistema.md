@@ -109,23 +109,40 @@ ESP32 - dispatcher_task (Core 0, prio 6)
 
 Toda a pilha de rede e gerenciada pelo modem via comandos AT nativos. O ESP32 envia comandos AT via UART serial.
 
-### GPS (Multi-constelacao)
+### GPS (A-GPS + Cold Start)
 
-O GPS opera em **Cold Start** (`AT+CGNSSPWR=1`, sem salvamento de efemerides na flash).
+O GPS utiliza **A-GPS** (`AT+CAGPS`) para acelerar o fix inicial. Com dados de assistência do servidor AGNSS baixados via 4G, o Time to First Fix é reduzido de **30s+ para 2-5s**.
+
+- **Inicialização:**
+  1. `AT+CGNSSPWR=1` (power on GNSS, cold start)
+  2. Aguarda URC `+CGNSSPWR:READY!` (~9s no chip ASR1601)
+  3. `AT+CGNSSMODE=7` (GPS+BDS+GLONASS — multi-constelação)
+  4. `AT+CAGPS` (download efeméride/almanac via socket TCP 4G, 9s timeout)
+  5. `AT+CGPSCOLD` (reinicia GPS com dados de assistência)
 
 - **Polling adaptativo:**
   - Sem fix: a cada **2 segundos** (busca rapida)
   - Com fix: a cada **30 segundos** (economia)
-- **Task separada:** `gps_reader_task` (prio 3, Core 1) executa `simcom_driver_get_gps()` em background, acionada via `xTaskNotify`. O `system_orchestrator` nunca bloqueia.
-- **Timeouts:** Comando `CGNSSPWR` timeout 9s, `CGPSINFO` timeout 9s, `CGNSSINFO` timeout 9s.
+- **Task separada:** `gps_reader_task` (prio 3, Core 1) executa `simcom_driver_get_gps()` em background, acionada via `xTaskNotify`. O `sys_orchestr` nunca bloqueia.
+- **Fallback para cold start puro:** Se `AT+CAGPS` falhar (sem 4G, erro 101-105), GPS opera em cold start puro.
 - **Formato principal:** `AT+CGPSINFO` (NMEA DDMM.MMMM), fallback `AT+CGNSSINFO`.
+
+### Cell Tower Location (Cache Assíncrono)
+
+Quando GPS não tem fix, o sistema usa triangulação por torre celular (Mozilla Location Service). Para não bloquear o processamento RFID, a consulta HTTP é feita em background:
+
+- **Cache assíncrono:** `sys_orchestr` atualiza lat/lon da torre a cada **5 minutos**
+- **Dispatcher:** Lê valor em cache (~0ms), sem esperar HTTP (10s)
+- **Invalidação automática:** Quando o Cell ID muda (handover/roaming)
+- **Só atualiza se GPS não tem fix** (evita HTTP desnecessário)
 
 ### Boot Sequence
 ```
 AT -> ATE1 -> CFUN=0 -> CFUN=1,1 -> SELECTSIMSLOT -> CPIN? -> CICCID
 -> GSN (IMEI) -> CNUM (MSISDN) -> CREG? -> CGATT=1 -> CGDCONT=1
--> CGAUTH=1,0,user,pass -> COPS? -> CSQ -> CMQTTSTART -> CMQTTACCQ
--> CMQTTCONNECT -> CMQTTSUB -> CGNSSPWR=1 -> Watchdog
+-> CGAUTH=1,0,user,pass -> COPS? -> CSQ
+-> CGNSSPWR=1 -> aguarda READY! -> CGNSSMODE=7 -> CAGPS (A-GPS)
+-> CMQTTSTART -> CMQTTACCQ -> CMQTTCONNECT -> CMQTTSUB -> Watchdog
 ```
 
 ### Timeouts Críticos
@@ -137,6 +154,8 @@ AT -> ATE1 -> CFUN=0 -> CFUN=1,1 -> SELECTSIMSLOT -> CPIN? -> CICCID
 | CMQTTCONNECT | 30s | Conexao MQTT |
 | CMQTTPUB | 10s | Publicacao QoS 1 |
 | CGNSSPWR | 9s | Power-on GPS |
+| CGNSSMODE | 5s | Configura constelações |
+| CAGPS | 9s | Download A-GPS via 4G |
 | CGPSINFO | 9s | Leitura GPS |
 | CMGS (SMS) | 40s | Envio SMS |
 

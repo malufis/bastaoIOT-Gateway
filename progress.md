@@ -717,4 +717,35 @@
   - `documentacao/08_Roadmap.md` (modificado)
   - `progress.md` (modificado)
 
+## Session: 2026-07-07
+
+### Phase 67: GPS Acelerado via A-GPS (AT+CAGPS) + Multi-Constelação
+- **Status:** complete
+- **Actions taken:**
+  - Implementado `simcom_driver_download_agps()` — download de dados de efemeride/almanac do servidor AGNSS via 4G TCP socket.
+  - Implementado `simcom_driver_configure_gnss()` — configuracao de multi-constelacao `AT+CGNSSMODE=7` (GPS+BDS+GLONASS) com fallback para modo 3.
+  - Adicionado handler URC `+CGNSSPWR:READY!` no `process_simcom_line()` para detectar chip GNSS pronto.
+  - Integrado no `app_main()` apos `simcom_driver_configure_apn()` (4G precisa estar ativo).
+  - Integrado no watchdog reconnection para re-baixar AGPS apos reconexao 4G.
+  - Resultado esperado: fix GPS em 2-5s (vs 30s+ cold start puro).
+- **Files modified:**
+  - `esp32_firmware/main/simcom_driver.c` (modificado)
+  - `esp32_firmware/main/simcom_driver.h` (modificado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `AGENTS.md` (modificado)
+
+### Phase 68: Cell Tower Location — Cache Assíncrono (Non-Blocking)
+- **Status:** complete
+- **Actions taken:**
+  - Adicionado cache de localizacao por torre celular (`cached_cell_lat`, `cached_cell_lon`, `cell_tower_location_valid`).
+  - Nova funcao `simcom_driver_update_cell_tower_cache()` faz HTTP POST Mozilla Location Service em background.
+  - `simcom_driver_get_cell_tower_location()` agora retorna cache (~0ms) em vez de HTTP bloqueante (10s).
+  - Orchestrator atualiza cache a cada 5 minutos (300s).
+  - Cache invalidado automaticamente quando CID da torre muda (roaming/cell handover).
+  - Dispatcher RFID processa tags sem delay por geolocalizacao.
+- **Files modified:**
+  - `esp32_firmware/main/simcom_driver.c` (modificado)
+  - `esp32_firmware/main/simcom_driver.h` (modificado)
+  - `esp32_firmware/main/main.c` (modificado)
+
 

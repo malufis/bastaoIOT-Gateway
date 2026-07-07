@@ -569,6 +569,29 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
 
 ---
 
+### **Fase 67: Aceleração GPS via A-GPS (AT+CAGPS)** - **Concluido**
+
+- **Objetivo:** Acelerar fix GPS de 30s+ para 2-5s usando dados de assistência do servidor AGNSS via 4G.
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - Implementado `simcom_driver_download_agps()` — sequência completa: aguarda `+CGNSSPWR:READY!`, configura multi-constelação (GPS+BDS+GLONASS), baixa dados AGNSS (`AT+CAGPS`), reinicia GPS com assistência (`AT+CGPSCOLD`).
+  - Handler URC `+CGNSSPWR:READY!` no `process_simcom_line()`.
+  - Integração no boot (após `configure_apn`) e na reconexão do watchdog.
+  - Fallback para modo 3 (GPS+QZSS) se modem não suportar modo 7.
+
+### **Fase 68: Cell Tower Location — Cache Assíncrono** - **Concluido**
+
+- **Objetivo:** Remover bloqueio de 10s do dispatcher RFID causado pelo HTTP POST ao Mozilla Location Service.
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - Cache de lat/lon da torre celular em `simcom_driver.c`.
+  - `simcom_driver_update_cell_tower_cache()` atualiza cache em background no orchestrator (a cada 5min).
+  - `simcom_driver_get_cell_tower_location()` retorna cache (~0ms, non-blocking).
+  - Invalidação automática quando CID da torre muda (handover/roaming).
+  - Tags RFID processadas sem delay por geolocalização.
+
+---
+
 ### **Fase 44 (Planejada): OTA via Celular (4G)**
 
 - **Objetivo:** Permitir atualização OTA do ESP32 Coordenador mesmo quando conectado apenas via 4G (modo CELLULAR_ONLY).

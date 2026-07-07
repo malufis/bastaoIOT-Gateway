@@ -1538,6 +1538,49 @@ Boot → simcom_driver_init() → AT+CGNSSPWR=1 (power on GNSS)
 
 ---
 
+## Sessão 47b — Cell Tower Location: Cache Assíncrono (Remove 10s Blocking)
+**Data:** 2026-07-07
+**Objetivo:** Mover `cell_tower_get_location()` (HTTP 10s) do dispatcher para cache em background.
+
+### Problema Raiz
+- `dispatcher_task` chamava `simcom_driver_get_cell_tower_location()` que fazia HTTP POST para Mozilla Location Service com timeout de 10s
+- Isso bloqueava o processamento de tags RFID — cada tag sem GPS demorava até 10s para processar
+- Se várias tags chegassem nesse intervalo, a fila enchia e tags eram perdidas
+
+### Solução: Cache Assíncrono
+- Cache de lat/lon: `cached_cell_lat`, `cached_cell_lon`, `cell_tower_location_valid`
+- Nova função `simcom_driver_update_cell_tower_cache()` — HTTP POST em background
+- `simcom_driver_get_cell_tower_location()` agora retorna cache (~0ms)
+- Orchestrator atualiza cache a cada 5 minutos (300 ciclos de 1s)
+- Cache invalidado automaticamente quando CID da torre muda (handover/roaming)
+- Só atualiza se GPS não tem fix (evita HTTP desnecessário)
+
+### Fluxo
+```
+Antes: dispatcher → cell_tower_get_location() → HTTP 10s ← BLOQUEIA
+Depois: orchestrator (5min) → update_cell_tower_cache() → HTTP 10s (background)
+        dispatcher → get_cell_tower_location() → cache ~0ms ← NÃO BLOQUEIA
+```
+
+### Modificações
+- `simcom_driver.c`: Cache lat/lon, `query_cpsi_metrics()` invalida cache quando CID muda
+- `simcom_driver.h`: Protótipo `simcom_driver_update_cell_tower_cache()`
+- `main.c`: Orchestrator chama update a cada 300s, evita se modem busy
+
+---
+
+## Sessão 48 — Documentação Completa do Projeto
+**Data:** 2026-07-07
+**Objetivo:** Atualizar toda a documentação do projeto com as últimas features (AGPS, cell tower cache).
+
+### Entregas
+- `progress.md`: Phases 67 (AGPS) e 68 (Cell Tower Cache) registradas
+- `ROADMAP.md`: Fases 67 e 68 adicionadas como concluídas
+- `PROJETO_BASTAO.md`: Tabela FreeRTOS atualizada (tasks reais), sequência init com AGPS, comandos GPS/GNSS expandidos, URCs atualizados, novas seções A-GPS e Cell Tower Location
+- `AGENTS.md`: Sessões 47b e 48 adicionadas (esta sessão)
+
+---
+
 ## Referência Rápida de Comandos
 
 ```powershell

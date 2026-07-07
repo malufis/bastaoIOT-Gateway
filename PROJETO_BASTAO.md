@@ -617,6 +617,56 @@ Para evitar perda de comunicação após desligamento ou reinicialização (onde
 
 ---
 
+## Tela K10 (Display + BLE Mesh Node)
+
+### Hardware
+- **MCU:** ESP32-S3 (unihiker)
+- **Display:** LVGL 8.x, 480x480, SPI (TFT + Touch)
+- **Speaker:** NS4168 via I2S (2W, sine wave, canal desabilitado entre beeps)
+- **I/O Expander:** XL9535 (I2C 0x20) — backlight, botões
+- **RFID:** Recebe tags via BLE Mesh do Coordenador
+- **Flash:** 16MB (partições: factory 3MB + SPIFFS 2MB)
+
+### Pinagem K10
+
+| Pino | Função | Nota |
+|------|--------|------|
+| GPIO0 | I2S BCLK | Speaker NS4168 |
+| GPIO38 | I2S LRCK | Speaker NS4168 |
+| GPIO45 | I2S SDO (TX) | Speaker NS4168 |
+| — | MCLK | NC (não conectado) |
+| GPIO46 | WS2812 | RGB LED (3 LEDs) |
+| GPIO47 | I2C SDA | XL9535, Acelerômetro |
+| GPIO48 | I2C SCL | XL9535, Acelerômetro |
+
+### Funcionalidades K10
+
+| Feature | Descrição |
+|---------|-----------|
+| **Tela Brinco Lido** | Tela branca fullscreen "BRINCO LIDO" + tag, auto-dismiss 3s |
+| **Speaker I2S** | Beep ao ler tag via speaker NS4168 (short/long/double/alert) |
+| **SPIFFS Contador** | Banco de tags diárias `/spiffs/tags/YYYY-MM-DD.json` |
+| **Aba Histórico** | Lista das últimas 20 tags lidas (Tab2) |
+| **GPS Display** | Coordenadas reais do Coordenador via Mesh |
+| **Bateria Display** | Percentual 0-100% via Mesh (não do STM32) |
+| **Backlight** | Timeout 120s, wake por botão ou tag RFID |
+
+### Tags para MQTT (via Mesh)
+
+O Coordenador envia tags à nuvem **somente se tiver localização** (GPS fix OU cell tower):
+- **Sem localização:** tag é enviada à K10 via Mesh (exibição), mas descartada do MQTT
+- **Cell tower fallback:** se GPS sem fix, usa triangulação via Mozilla Location Service
+
+### Partições K10
+
+```
+factory  (3MB)  → Firmware K10
+spiffs   (2MB)  → Banco de tags diárias
+nvs      (24KB) → Configurações BLE Mesh
+```
+
+---
+
 ## Segurança
 
 ### Criptografia

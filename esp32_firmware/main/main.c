@@ -125,8 +125,30 @@ static void dispatcher_task(void *pvParameters) {
 
         // Monta JSON para MQTT no formato esperado pelo sistemaBastao
         // nivel_bateria = percentual 0-100 (nao tensao bruta)
-        double lat = bastao_current_status.gps_fix ? bastao_current_status.gps_latitude : 0.0;
-        double lon = bastao_current_status.gps_fix ? bastao_current_status.gps_longitude : 0.0;
+        // Localizacao: GPS优先, fallback para torre celular
+        double lat = 0.0;
+        double lon = 0.0;
+        bool has_location = false;
+
+        if (bastao_current_status.gps_fix) {
+            lat = bastao_current_status.gps_latitude;
+            lon = bastao_current_status.gps_longitude;
+            has_location = true;
+        } else if (simcom_driver_is_cell_tower_valid()) {
+            /* Tenta geolocalizacao por torre celular (Mozilla Location Service) */
+            double cell_lat = 0.0, cell_lon = 0.0;
+            if (simcom_driver_get_cell_tower_location(&cell_lat, &cell_lon) == ESP_OK) {
+                lat = cell_lat;
+                lon = cell_lon;
+                has_location = true;
+                ESP_LOGI(TAG, "Usando localizacao via torre celular: %.6f, %.6f", lat, lon);
+            }
+        }
+
+        /* Publica MQTT apenas se tiver localizacao (GPS ou torre) */
+        if (!has_location) {
+            ESP_LOGW(TAG, "Tag %s descartada do MQTT (sem GPS e sem torre celular).", raw_msg.tag);
+        }
         float batt_v = bastao_current_status.battery_voltage > 0.0f ? bastao_current_status.battery_voltage : 8.4f;
         int batt_pct;
         if (batt_v >= 8.80f) batt_pct = 100;
@@ -143,6 +165,22 @@ static void dispatcher_task(void *pvParameters) {
         if (raw_msg.movement || raw_msg.type == DATA_TYPE_RFID) {
           stm32_cmd_send_buzzer(STM32_CMD_BUZZER_SHORT);
         }
+
+        // 3. Enfileira JSON cru para MQTT (sistemaBastao)
+        //    A criptografia AES-256 e feita na mqtt_publish_task (Core 1, prio 4)
+        //    para nao bloquear o dispatcher com a sobrecarga computacional do AES.
+        //    Publica APENAS se tiver localizacao (GPS ou torre celular).
+        if (has_location && json_mqtt[0] != '\0') {
+          ESP_LOGD(TAG, "JSON MQTT: %s", json_mqtt);
+          esp_err_t mqtt_err = mqtt_publisher_enqueue_raw(bastao_network_config.mqtt.topic_telemetry,
+                                           json_mqtt, 1);
+          if (mqtt_err != ESP_OK) {
+            ESP_LOGW(TAG, "Falha ao enfileirar MQTT. Salvando no cache...");
+          }
+        } else if (!has_location) {
+          ESP_LOGW(TAG, "Tag %s descartada do MQTT (sem localizacao).", raw_msg.tag);
+        }
+
       } else if (raw_msg.type == DATA_TYPE_BATTERY) {
         float pct = 0;
         if (raw_msg.battery_v >= 8.80f) pct = 100;
@@ -177,21 +215,6 @@ static void dispatcher_task(void *pvParameters) {
       esp_err_t err = mesh_coordinator_send_data(json_buf);
       if (err != ESP_OK) {
         ESP_LOGE(TAG, "Falha ao encaminhar dados via BLE Mesh.");
-      }
-
-      // 3. Se for leitura RFID, enfileira JSON cru para MQTT (sistemaBastao)
-      //    A criptografia AES-256 e feita na mqtt_publish_task (Core 1, prio 4)
-      //    para nao bloquear o dispatcher com a sobrecarga computacional do AES.
-      if ((raw_msg.type == DATA_TYPE_RFID || raw_msg.type == DATA_TYPE_RFID_WITH_ACCEL) &&
-          json_mqtt[0] != '\0') {
-        ESP_LOGD(TAG, "JSON MQTT: %s", json_mqtt);
-        err = mqtt_publisher_enqueue_raw(bastao_network_config.mqtt.topic_telemetry,
-                                         json_mqtt, 1);
-        if (err != ESP_OK) {
-          ESP_LOGW(TAG, "Falha ao enfileirar MQTT. Salvando no cache...");
-          // Cache precisa de payload criptografado, mas se a fila MQTT ta cheia
-          // o cache tambem falharia - log apenas
-        }
       }
     }
   }

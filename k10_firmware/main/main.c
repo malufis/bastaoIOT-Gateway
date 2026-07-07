@@ -6,7 +6,10 @@
 #include "hal_display.h"
 #include "gui_manager.h"
 #include "hal_sensors.h"
+#include "hal_buzzer.h"
+#include "tag_database.h"
 #include "k10_mesh_node.h"
+#include <time.h>
 
 #include "lvgl.h"
 
@@ -18,15 +21,32 @@ static const char *TAG = "K10_MAIN";
 void gui_task(void *pvParameters) {
     ESP_LOGI(TAG, "Iniciando Task LVGL e Sensores");
     
-    // 1. Inicializa driver LCD, Touch e Sensores
+    // 1. Inicializa driver LCD, Touch, Sensores, Speaker e DB de Tags
     hal_display_init();
     hal_sensors_init();
+    hal_buzzer_init();
+    tag_database_init();
 
     // 2. Inicializa LVGL e Gerenciador de UI
     gui_manager_init();
 
     uint32_t last_tick = esp_log_timestamp();
     int sensor_timer = 0;
+
+    /* Beep de boot: 3 bipes curtos para confirmar que o speaker funciona */
+    {
+        esp_err_t e;
+        ESP_LOGI(TAG, "Tocando 3 bipes de boot");
+        e = hal_buzzer_beep_short();
+        ESP_LOGI(TAG, "Beep 1: %s", esp_err_to_name(e));
+        vTaskDelay(pdMS_TO_TICKS(300));
+        e = hal_buzzer_beep_short();
+        ESP_LOGI(TAG, "Beep 2: %s", esp_err_to_name(e));
+        vTaskDelay(pdMS_TO_TICKS(300));
+        e = hal_buzzer_beep_short();
+        ESP_LOGI(TAG, "Beep 3: %s", esp_err_to_name(e));
+        vTaskDelay(pdMS_TO_TICKS(300));
+    }
 
     while (1) {
         uint32_t current_tick = esp_log_timestamp();
@@ -35,6 +55,7 @@ void gui_task(void *pvParameters) {
 
         // Atualiza sensores locais e dados Mesh a cada 50ms
         if(sensor_timer++ >= 5) { 
+            static float last_x = 0, last_y = 0, last_z = 0;  /* Compartilhado: periodico + RFID */
             accel_data_t accel;
             battery_data_t bat;
             if(hal_sensors_read_accel(&accel) == ESP_OK && hal_sensors_read_battery(&bat) == ESP_OK) {
@@ -43,7 +64,6 @@ void gui_task(void *pvParameters) {
                 // Envia acelerometro via BLE Mesh para o coordenador
                 if (k10_mesh_is_ready()) {
                     // Detecta movimento: > 10% de 1G em qualquer eixo
-                    static float last_x = 0, last_y = 0, last_z = 0;
                     static uint32_t last_send_time = 0;
                     float dx = accel.x - last_x;
                     float dy = accel.y - last_y;
@@ -65,6 +85,19 @@ void gui_task(void *pvParameters) {
             if (rfid && rfid->valid) {
                 hal_display_reset_inactivity();
                 ESP_LOGI(TAG, "RFID via Mesh: %s %s", rfid->model, rfid->tag);
+
+                // Tela de leitura (overlay branco 4s) - SEMPRE mostra, ignora dedup
+                gui_manager_show_tag_screen(rfid->tag);
+
+                // Beep no speaker (curto, 100ms 1kHz)
+                hal_buzzer_beep_short();
+
+                // Registra no banco de dados local (SPIFFS)
+                tag_database_add(rfid->tag, rfid->animal_name, (uint32_t)time(NULL), 0.0f, 0.0f);
+
+                // Atualiza a lista de historico na Tab2
+                gui_manager_refresh_history();
+
                 gui_manager_update_rfid(rfid->model, rfid->tag,
                                         rfid->animal_name, rfid->weight, rfid->lot);
 
@@ -77,7 +110,7 @@ void gui_task(void *pvParameters) {
                 if (read_accel_ok) {
                     gui_manager_update_sensors(&immediate_accel, read_bat_ok ? &immediate_bat : NULL);
 
-                    static float last_x = 0, last_y = 0, last_z = 0;
+                    /* Reusa last_x/y/z do escopo externo (periodico) para manter estado unificado */
                     float dx = immediate_accel.x - last_x;
                     float dy = immediate_accel.y - last_y;
                     float dz = immediate_accel.z - last_z;

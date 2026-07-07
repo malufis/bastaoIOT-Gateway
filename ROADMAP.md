@@ -515,6 +515,60 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
 
 ---
 
+### **Fase 66.1: Buzzer via I2S (Speaker NS4168)** - **Concluido**
+
+- **Objetivo:** Implementar driver de áudio para o speaker built-in da K10 (NS4168) via I2S.
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - Criado `k10_hal/hal_buzzer.c/.h` com driver I2S usando `driver/i2s_std.h` (API nova ESP-IDF v5.4.4).
+  - Pinos: BCLK=GPIO0, LRCK=GPIO38, SDO=GPIO45 (MCLK=NC).
+  - Geração de sine wave 44100Hz/16-bit/mono.
+  - Tipos de beep: short(100ms), long(300ms), double, alert(2kHz).
+  - Chamado no `main.c` da K10 a cada leitura RFID.
+
+### **Fase 66.2: Tela "BRINCO LIDO"** - **Concluido**
+
+- **Objetivo:** Exibir tela de confirmação de leitura com feedback visual.
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - Tela branca fullscreen com "BRINCO LIDO" + número da tag.
+  - Auto-dismiss após 3s via `lv_timer_create()`.
+  - Texto "GPS SINCRONIZADO" exibido abaixo de lat/lon quando fix=true.
+  - Corrigido `lv_font_montserrat_28` → `lv_font_montserrat_24`.
+
+### **Fase 66.3: SPIFFS + Contador Diário** - **Concluido**
+
+- **Objetivo:** Persistir leituras de tags em armazenamento local para contagem diária.
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - Novo componente `tag_database/` com `tag_database.c/.h`.
+  - Partição SPIFFS (2MB em 0x310000) adicionada ao `partitions.csv`.
+  - Arquivos JSON por data (`/spiffs/tags/YYYY-MM-DD.json`).
+  - Buffer em RAM com auto-save a cada 10 reads.
+  - Flash K10 atualizada 4MB→16MB.
+
+### **Fase 66.4: Aba Histórico (Tab2)** - **Concluido**
+
+- **Objetivo:** Exibir histórico de leituras na tela K10.
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - Reescrito `create_screen_connectivity()` → `create_screen_history()`.
+  - Header com ícone olho + total de leituras + tags únicas.
+  - Lista scrollável com últimas 20 tags (tag ID + nome animal).
+  - Ícone da aba mudado de WiFi→LIST.
+
+### **Fase 66.5: GPS Gate + Triangulação Celular** - **Concluido**
+
+- **Objetivo:** Publicar MQTT somente quando houver localização válida.
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - Extraído TAC/CID/EARFCN de `AT+CPSI?` em `query_cpsi_metrics()`.
+  - Adicionada `cell_tower_get_location()` via Mozilla Location Service HTTPS POST.
+  - Dispatcher: GPS优先 → cell tower fallback → sem localização: tag descartada do MQTT.
+  - Atualização de partições: ESP32 OTA 4MB cada, SPIFFS 2MB, flash 16MB.
+
+---
+
 ### **Fase 44 (Planejada): OTA via Celular (4G)**
 
 - **Objetivo:** Permitir atualização OTA do ESP32 Coordenador mesmo quando conectado apenas via 4G (modo CELLULAR_ONLY).

@@ -18,6 +18,10 @@ ESP32 - stm32_uart_rx_task (Core 1, prio 6)
 ESP32 - dispatcher_task (Core 0, prio 6)
   |-- rfid_dedup_is_duplicate() (janela 60s)
   |-- animal_db_lookup()
+  |-- GPS gate: has_location()?
+  |    ├── GPS fix → ok
+  |    ├── Cell tower → ok (fallback via Mozilla Location Service)
+  |    └── Sem localização → descarta do MQTT (envia à K10 via Mesh)
   |-- mesh_coordinator_send_data()  -> BLE Mesh -> K10
   |-- mqtt_publisher_enqueue_raw()  -> mqtt_pub_task
                                       -> secure_payload_encrypt() (AES-256-CBC)
@@ -47,6 +51,18 @@ ESP32 - dispatcher_task (Core 0, prio 6)
 |------|:----:|:----:|--------|
 | `gui_task` | 5 | 1 | LVGL + sensores + mesh polling (50ms) |
 | `network_task` | 1 | 0 | BLE Mesh node (ociosa, stack roda em callbacks) |
+
+## Funcionalidades K10
+
+| Feature | Descrição |
+|---------|-----------|
+| Speaker I2S | Beep ao ler tag via NS4168 (short/long/double/alert) |
+| Tela Brinco Lido | Exibição fullscreen "BRINCO LIDO" + tag, auto-dismiss 3s |
+| SPIFFS Contador | Banco de tags diárias `/spiffs/tags/YYYY-MM-DD.json` |
+| Aba Histórico | Lista das últimas 20 tags lidas (Tab2) |
+| GPS Display | Coordenadas reais do Coordenador via Mesh |
+| Bateria Display | Percentual 0-100% via Mesh (não do STM32) |
+| Backlight | Timeout 120s, wake por botão ou tag RFID |
 
 ## Comunicacao BLE Mesh
 

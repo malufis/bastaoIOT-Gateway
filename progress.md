@@ -617,4 +617,104 @@
   - `AGENTS.md` (modificado)
   - `progress.md` (modificado)
 
+## Session: 2026-07-02
+
+### Phase 66.1: Buzzer via I2S (Speaker NS4168)
+- **Status:** complete
+- **Actions taken:**
+  - Criado `k10_hal/hal_buzzer.c/.h` com driver I2S usando `driver/i2s_std.h` (API nova ESP-IDF v5.4.4).
+  - Pinos: BCLK=GPIO0, LRCK=GPIO38, SDO=GPIO45 (MCLK=NC).
+  - Geração de sine wave 44100Hz/16-bit/mono.
+  - Tipos de beep: short(100ms), long(300ms), double, alert(2kHz).
+  - Incluído `FreeRTOS.h` para corrigir `xTaskCreatePinnedToCore` não declarado.
+- **Files created:**
+  - `k10_firmware/components/k10_hal/hal_buzzer.c` (criado)
+  - `k10_firmware/components/k10_hal/hal_buzzer.h` (criado)
+- **Files modified:**
+  - `k10_firmware/components/k10_hal/CMakeLists.txt` (modificado)
+  - `k10_firmware/main/main.c` (modificado)
+
+### Phase 66.2: Tela "BRINCO LIDO"
+- **Status:** complete
+- **Actions taken:**
+  - Tela branca fullscreen com "BRINCO LIDO" + número da tag.
+  - Auto-dismiss após 3s via `lv_timer_create()`.
+  - Texto "GPS SINCRONIZADO" exibido abaixo de lat/lon quando fix=true.
+  - Corrigido `lv_font_montserrat_28` → `lv_font_montserrat_24`.
+  - Habilitado `CONFIG_LV_FONT_MONTSERRAT_20=y` e `CONFIG_LV_FONT_MONTSERRAT_24=y` em sdkconfig.
+- **Files modified:**
+  - `k10_firmware/components/gui/gui_manager.c` (modificado)
+  - `k10_firmware/components/gui/include/gui_manager.h` (modificado)
+  - `k10_firmware/sdkconfig.defaults` (modificado)
+  - `k10_firmware/sdkconfig` (modificado)
+
+### Phase 66.3: SPIFFS + Contador Diário
+- **Status:** complete
+- **Actions taken:**
+  - Novo componente `tag_database/` com `tag_database.c/.h`.
+  - Partição SPIFFS (2MB em 0x310000) adicionada ao `partitions.csv`.
+  - Arquivos JSON por data (`/spiffs/tags/YYYY-MM-DD.json`).
+  - Buffer em RAM com auto-save a cada 10 reads.
+  - Flash K10 atualizada 4MB→16MB em sdkconfig.
+- **Files created:**
+  - `k10_firmware/components/tag_database/tag_database.c` (criado)
+  - `k10_firmware/components/tag_database/tag_database.h` (criado)
+  - `k10_firmware/components/tag_database/CMakeLists.txt` (criado)
+- **Files modified:**
+  - `k10_firmware/components/gui/CMakeLists.txt` (modificado)
+  - `k10_firmware/main/CMakeLists.txt` (modificado)
+  - `k10_firmware/partitions.csv` (modificado)
+  - `k10_firmware/sdkconfig.defaults` (modificado)
+  - `k10_firmware/sdkconfig` (modificado)
+
+### Phase 66.4: Aba Histórico (Tab2)
+- **Status:** complete
+- **Actions taken:**
+  - Reescrito `create_screen_connectivity()` → `create_screen_history()`.
+  - Header com ícone olho + total de leituras + tags únicas.
+  - Lista scrollável com últimas 20 tags (tag ID + nome animal).
+  - `gui_manager_refresh_history()` chamado após cada leitura RFID.
+  - Ícone da aba mudado de WiFi→LIST.
+- **Files modified:**
+  - `k10_firmware/components/gui/gui_manager.c` (modificado)
+  - `k10_firmware/components/gui/include/gui_manager.h` (modificado)
+
+### Phase 66.5: GPS Gate + Triangulação Celular
+- **Status:** complete
+- **Actions taken:**
+  - Extraído TAC/CID/EARFCN de `AT+CPSI?` em `query_cpsi_metrics()`.
+  - Adicionada `cell_tower_get_location()` via Mozilla Location Service HTTPS POST.
+  - Adicionadas `simcom_driver_has_location()`, `simcom_driver_get_cell_tower_location()`, `simcom_driver_is_cell_tower_valid()`.
+  - Dispatcher: GPS优先 → cell tower fallback → sem localização: tag descartada do MQTT.
+  - Atualização de partições: ESP32 OTA 4MB cada, SPIFFS 2MB, flash 16MB.
+- **Files modified:**
+  - `esp32_firmware/main/simcom_driver.c` (modificado)
+  - `esp32_firmware/main/simcom_driver.h` (modificado)
+  - `esp32_firmware/main/main.c` (modificado)
+  - `esp32_firmware/partitions.csv` (modificado)
+  - `esp32_firmware/sdkconfig.defaults` (modificado)
+  - `esp32_firmware/sdkconfig` (modificado)
+
+### Phase 66.6: Documentação Atualizada
+- **Status:** complete
+- **Actions taken:**
+  - Atualizado `AGENTS.md` com Sessão 20.
+  - Atualizado `PROJETO_BASTAO.md` com seção K10.
+  - Atualizado `README.md` com novas features.
+  - Atualizado `ROADMAP.md` com fases 66.1-66.5.
+  - Atualizado `Manual/funcionalidades.md` com funcionalidades K10.
+  - Atualizado `Manual/arquitetura.md` com pinagem K10.
+  - Atualizado `documentacao/01_Arquitetura_do_Sistema.md` com GPS gate.
+  - Atualizado `documentacao/08_Roadmap.md` com K10 features.
+- **Files modified:**
+  - `AGENTS.md` (modificado)
+  - `PROJETO_BASTAO.md` (modificado)
+  - `README.md` (modificado)
+  - `ROADMAP.md` (modificado)
+  - `Manual/funcionalidades.md` (modificado)
+  - `Manual/arquitetura.md` (modificado)
+  - `documentacao/01_Arquitetura_do_Sistema.md` (modificado)
+  - `documentacao/08_Roadmap.md` (modificado)
+  - `progress.md` (modificado)
+
 

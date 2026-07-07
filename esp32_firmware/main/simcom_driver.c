@@ -18,6 +18,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_event.h"
+#include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -80,6 +81,12 @@ static int cached_rsrp = -140;
 static int cached_rsrq = -20;
 static int cached_sinr = -20;
 static char cached_ceer[64] = "Nenhum";
+
+/* --- Cache de torre celular (para geolocalizacao) --- */
+static int cached_tac = 0;
+static int cached_cid = 0;
+static int cached_earfcn = 0;
+static bool cell_tower_valid = false;
 
 /* --- Prototipos de Funcoes Privadas --- */
 static esp_err_t at_send_cmd(const char *cmd, const char *expected_resp,
@@ -1112,6 +1119,10 @@ static esp_err_t query_cpsi_metrics(void) {
         }
 
         if (f_idx >= 15) {
+            cached_tac = atoi(fields[2]);
+            cached_cid = atoi(fields[3]);
+            cached_earfcn = atoi(fields[4]);
+            cell_tower_valid = (cached_cid != 0);
             cached_rsrq = atoi(fields[11]);
             cached_rsrp = atoi(fields[12]);
             int rssi_cpsi = atoi(fields[13]);
@@ -1123,6 +1134,121 @@ static esp_err_t query_cpsi_metrics(void) {
         }
     }
     return ESP_FAIL;
+}
+
+/**
+ * @brief Obtem localizacao approximada via torre celular (Mozilla Location Service).
+ *
+ * Usa MCC, MNC, TAC, CID e EARFCN para consultar a API do Mozilla.
+ * Requer conexao ativa (Wi-Fi ou celular com dados).
+ *
+ * @param[out] lat Latitude obtida
+ * @param[out] lon Longitude obtida
+ * @return ESP_OK se obteve localizacao, ESP_FAIL caso contrario
+ */
+static esp_err_t cell_tower_get_location(double *lat, double *lon) {
+    if (!cell_tower_valid || cached_cid == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Monta JSON para Mozilla Location Service */
+    cJSON *root = cJSON_CreateObject();
+    cJSON *cellests = cJSON_AddArrayToObject(root, "cellTowers");
+
+    cJSON *cell = cJSON_CreateObject();
+    cJSON_AddNumberToObject(cell, "mobileCountryCode", cached_mcc);
+    cJSON_AddNumberToObject(cell, "mobileNetworkCode", cached_mnc);
+    cJSON_AddNumberToObject(cell, "locationAreaCode", cached_tac);
+    cJSON_AddNumberToObject(cell, "cellId", cached_cid);
+    cJSON_AddNumberToObject(cell, "age", 0);
+    cJSON_AddNumberToObject(cell, "signalStrength", cached_rsrp);
+    cJSON_AddNumberToObject(cell, "timingAdvance", 0);
+    cJSON_AddItemToArray(cellests, cell);
+
+    char *post_data = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    if (!post_data) return ESP_FAIL;
+
+    ESP_LOGI(TAG, "MLS Request: MCC=%d MNC=%d TAC=%d CID=%d EARFCN=%d",
+             cached_mcc, cached_mnc, cached_tac, cached_cid, cached_earfcn);
+
+    /* Buffer para resposta */
+    char response_buf[512];
+    memset(response_buf, 0, sizeof(response_buf));
+
+    esp_http_client_config_t http_config = {
+        .url = "https://location.services.mozilla.com/v1/geolocate?key=test",
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 10000,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&http_config);
+    if (!client) {
+        free(post_data);
+        return ESP_FAIL;
+    }
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_err_t err = esp_http_client_open(client, strlen(post_data));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "MLS HTTP open falhou: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        free(post_data);
+        return err;
+    }
+
+    int written = esp_http_client_write(client, post_data, strlen(post_data));
+    free(post_data);
+
+    if (written < 0) {
+        ESP_LOGE(TAG, "MLS HTTP write falhou");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+
+    int read_len = esp_http_client_read(client, response_buf, sizeof(response_buf) - 1);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (read_len <= 0) {
+        ESP_LOGW(TAG, "MLS: Sem resposta HTTP");
+        return ESP_FAIL;
+    }
+    response_buf[read_len] = '\0';
+
+    /* Parse da resposta: {"location":{"lat":-23.55,"lng":-46.63},"accuracy":1500} */
+    cJSON *resp_root = cJSON_Parse(response_buf);
+    if (!resp_root) {
+        ESP_LOGW(TAG, "MLS: JSON parse falhou");
+        return ESP_FAIL;
+    }
+
+    cJSON *location = cJSON_GetObjectItem(resp_root, "location");
+    if (!location) {
+        cJSON_Delete(resp_root);
+        ESP_LOGW(TAG, "MLS: campo 'location' ausente");
+        return ESP_FAIL;
+    }
+
+    cJSON *lat_json = cJSON_GetObjectItem(location, "lat");
+    cJSON *lng_json = cJSON_GetObjectItem(location, "lng");
+    if (!lat_json || !lng_json) {
+        cJSON_Delete(resp_root);
+        ESP_LOGW(TAG, "MLS: campos lat/lng ausentes");
+        return ESP_FAIL;
+    }
+
+    *lat = lat_json->valuedouble;
+    *lon = lng_json->valuedouble;
+
+    cJSON *accuracy = cJSON_GetObjectItem(resp_root, "accuracy");
+    int acc = accuracy ? accuracy->valueint : -1;
+
+    ESP_LOGI(TAG, "MLS: lat=%.6f lon=%.6f accuracy=%dm", *lat, *lon, acc);
+    cJSON_Delete(resp_root);
+    return ESP_OK;
 }
 
 static esp_err_t query_ceer_log(void) {
@@ -1719,3 +1845,16 @@ void simcom_driver_set_suspended(bool suspend) {
 }
 
 bool simcom_driver_is_suspended(void) { return cellular_suspended; }
+
+bool simcom_driver_has_location(void) {
+    /* Localizacao disponivel: GPS com fix OU torre celular valida */
+    return bastao_current_status.gps_fix || cell_tower_valid;
+}
+
+esp_err_t simcom_driver_get_cell_tower_location(double *lat, double *lon) {
+    return cell_tower_get_location(lat, lon);
+}
+
+bool simcom_driver_is_cell_tower_valid(void) {
+    return cell_tower_valid;
+}

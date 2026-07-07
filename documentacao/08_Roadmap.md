@@ -43,6 +43,11 @@
 - [x] BLE Mesh Node com persistencia NVS
 - [x] Polling de 50ms para dados Mesh
 - [x] Acelerometro e bateria locais
+- [x] Speaker I2S (NS4168) — beep ao ler tag
+- [x] Tela "BRINCO LIDO" — exibicao fullscreen + auto-dismiss 3s
+- [x] SPIFFS — banco de tags diarias (`/spiffs/tags/YYYY-MM-DD.json`)
+- [x] Aba Historico — ultimas 20 tags lidas
+- [x] Flash 16MB (particoes: factory 3MB + SPIFFS 2MB)
 
 ## Cronograma (Mermaid Gantt)
 
@@ -88,6 +93,7 @@ gantt
 | 42 | 26-jun | Otimizacao FreeRTOS: prioridades, stacks, monitoring |
 | 43 | 26-jun | GPS em task separada (gps_reader_task prio 3 Core 1) |
 | 44 | 26-jun | Correcoes: nomes task, CMQTTREL retry, WiFi AP config, BLE Mesh segments |
+| 20 | 02-jul | 5 melhorias: Buzzer I2S, Tela Brinco, SPIFFS, Historico, GPS Gate |
 
 ## Proximos Passos
 

@@ -101,6 +101,8 @@ idf.py -p COM3 flash monitor
 - `build/bootloader/bootloader.bin` - Bootloader
 - `build/partition-table.bin` - Tabela de partições
 
+**Nota:** Flash configurada para 16MB. Partições: OTA 4MB cada, SPIFFS 2MB.
+
 ---
 
 ## Configuração EMQX (sistemaBastao)

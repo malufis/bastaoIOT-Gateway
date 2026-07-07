@@ -7,6 +7,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
 #include "hal_sensors.h"
+#include "tag_database.h"
 #include <stdio.h>
 
 static const char *TAG = "GUI_MANAGER";
@@ -29,6 +30,24 @@ static lv_obj_t *tv;
 static lv_obj_t *t1, *t2, *t3, *t4;
 static lv_group_t * g_main;
 static bool is_internal_focus = false;
+
+/* Overlay de Leitura RFID */
+static lv_obj_t *tag_overlay = NULL;
+static lv_timer_t *tag_overlay_timer = NULL;
+
+/* Histórico de Tags (Tab2) */
+static lv_obj_t *history_list = NULL;
+
+static void tag_overlay_remove_cb(lv_timer_t *timer) {
+    if (tag_overlay) {
+        lv_obj_del(tag_overlay);
+        tag_overlay = NULL;
+    }
+    if (tag_overlay_timer) {
+        lv_timer_del(tag_overlay_timer);
+        tag_overlay_timer = NULL;
+    }
+}
 
 /* Labels Dinâmicas para Sensores */
 static lv_obj_t *lbl_bat_pct;
@@ -214,60 +233,63 @@ static void create_screen_readings(lv_obj_t * parent) {
     lv_obj_set_user_data(parent, NULL);
 }
 
-static void create_screen_connectivity(lv_obj_t * parent) {
+static void create_screen_history(lv_obj_t * parent) {
     lv_obj_set_style_bg_color(parent, COLOR_BG_DARK, 0);
-    lv_obj_t * list = lv_list_create(parent);
-    lv_obj_set_size(list, lv_pct(100), lv_pct(95));
-    lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(list, COLOR_BG_DARK, 0);
-    lv_obj_set_style_border_width(list, 0, 0);
-    
-    lv_obj_t * btn;
-    lv_obj_t * txt;
 
-    // --- SECAO 4G/3G ---
-    txt = lv_list_add_text(list, "REDES MOVEIS (4G/3G)");
-    lv_obj_set_style_bg_color(txt, COLOR_ANTHRACITE, 0);
-    lv_obj_set_style_bg_opa(txt, 255, 0);
-    lv_obj_set_style_text_color(txt, COLOR_WHITE, 0);
+    /* Cabeçalho com resumo do dia */
+    lv_obj_t *header = lv_obj_create(parent);
+    lv_obj_set_size(header, lv_pct(100), 40);
+    lv_obj_set_style_bg_color(header, COLOR_ANTHRACITE, 0);
+    lv_obj_set_style_bg_opa(header, 255, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_set_style_radius(header, 0, 0);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
 
-    btn = lv_list_add_btn(list, LV_SYMBOL_SD_CARD, "APN: vivo.com.br");
-    lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
-    btn = lv_list_add_btn(list, LV_SYMBOL_DIRECTORY, "Operadora: VIVO");
-    lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
+    lv_obj_t *header_lbl = lv_label_create(header);
+    tag_day_summary_t sum = tag_database_get_summary();
+    char hdr[48];
+    snprintf(hdr, sizeof(hdr), LV_SYMBOL_EYE_OPEN "  %lu ler. | %lu unicos",
+             sum.total_reads, sum.unique_tags);
+    lv_label_set_text(header_lbl, hdr);
+    lv_obj_set_style_text_color(header_lbl, COLOR_WHITE, 0);
+    lv_obj_set_style_text_font(header_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(header_lbl);
 
-    // --- SECAO WIFI ---
-    txt = lv_list_add_text(list, "CONEXAO WIFI");
-    lv_obj_set_style_bg_color(txt, COLOR_ANTHRACITE, 0);
-    lv_obj_set_style_bg_opa(txt, 255, 0);
-    lv_obj_set_style_text_color(txt, COLOR_WHITE, 0);
+    /* Lista de tags (scrollável) — fonte 12px para caber mais texto */
+    history_list = lv_list_create(parent);
+    lv_obj_set_size(history_list, lv_pct(100), lv_pct(100) - 40);
+    lv_obj_align(history_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(history_list, COLOR_BG_DARK, 0);
+    lv_obj_set_style_border_width(history_list, 0, 0);
+    lv_obj_set_style_pad_all(history_list, 2, 0);
+    lv_obj_set_style_pad_row(history_list, 2, 0);
+    lv_obj_set_style_text_font(history_list, &lv_font_montserrat_12, 0);
 
-    btn = lv_list_add_btn(list, LV_SYMBOL_WIFI, "SSID: Fazenda_Raptor");
-    lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
-    btn = lv_list_add_btn(list, LV_SYMBOL_OK, "Estado: Conectado");
-    lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
+    /* Popula com as ultimas tags */
+    uint32_t count = tag_database_get_record_count();
+    uint32_t show = (count > 20) ? 20 : count; /* Mostra as 20 mais recentes */
 
-    // --- SECAO RFID ---
-    txt = lv_list_add_text(list, "MODULO RFID");
-    lv_obj_set_style_bg_color(txt, COLOR_ANTHRACITE, 0);
-    lv_obj_set_style_bg_opa(txt, 255, 0);
-    lv_obj_set_style_text_color(txt, COLOR_WHITE, 0);
+    for (uint32_t i = 0; i < show; i++) {
+        tag_record_t rec;
+        if (tag_database_get_record(i, &rec) != ESP_OK) continue;
 
-    btn = lv_list_add_btn(list, LV_SYMBOL_REFRESH, "Modo: UHF");
-    lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
-    btn = lv_list_add_btn(list, LV_SYMBOL_CHARGE, "Potencia: 30dBm");
-    lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
+        char label[128];
+        if (rec.animal_name[0]) {
+            snprintf(label, sizeof(label), "%.40s  (%.40s)", rec.tag, rec.animal_name);
+        } else {
+            snprintf(label, sizeof(label), "%.60s", rec.tag);
+        }
 
-    // --- SECAO GPS ---
-    txt = lv_list_add_text(list, "LOCALIZACAO (GPS/GLONASS)");
-    lv_obj_set_style_bg_color(txt, COLOR_ANTHRACITE, 0);
-    lv_obj_set_style_bg_opa(txt, 255, 0);
-    lv_obj_set_style_text_color(txt, COLOR_WHITE, 0);
+        lv_obj_t *btn = lv_list_add_btn(history_list, LV_SYMBOL_SD_CARD, label);
+        lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
+    }
 
-    btn = lv_list_add_btn(list, LV_SYMBOL_GPS, "Ativar: GPS + GLONASS");
-    lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
+    if (show == 0) {
+        lv_obj_t *empty = lv_list_add_btn(history_list, LV_SYMBOL_DIRECTORY, "Nenhuma tag lida hoje");
+        lv_obj_add_event_cb(empty, internal_obj_event_cb, LV_EVENT_KEY, NULL);
+    }
 
-    lv_obj_set_user_data(parent, list); 
+    lv_obj_set_user_data(parent, history_list);
 }
 
 static void create_screen_device(lv_obj_t * parent) {
@@ -462,12 +484,12 @@ void gui_manager_init(void) {
 
     /* Criação das Abas */
     t1 = lv_tabview_add_tab(tv, LV_SYMBOL_HOME);
-    t2 = lv_tabview_add_tab(tv, LV_SYMBOL_WIFI);
+    t2 = lv_tabview_add_tab(tv, LV_SYMBOL_LIST);
     t3 = lv_tabview_add_tab(tv, LV_SYMBOL_SETTINGS);
-    t4 = lv_tabview_add_tab(tv, LV_SYMBOL_LIST); // Alterado de GRAPH para LIST
+    t4 = lv_tabview_add_tab(tv, LV_SYMBOL_SD_CARD);
 
     create_screen_readings(t1);
-    create_screen_connectivity(t2);
+    create_screen_history(t2);
     create_screen_device(t3);
     create_screen_info(t4);
 
@@ -528,10 +550,12 @@ void gui_manager_update_battery_mesh(float voltage, uint8_t percentage, uint8_t 
 void gui_manager_update_gps(double latitude, double longitude, uint8_t fix) {
     if (lbl_gps_coords) {
         if (fix) {
-            char buf[48];
-            snprintf(buf, sizeof(buf), "%.6f, %.6f", latitude, longitude);
+            char buf[80];
+            snprintf(buf, sizeof(buf), "%.6f, %.6f\nGPS SINCRONIZADO", latitude, longitude);
             lv_label_set_text(lbl_gps_coords, buf);
             lv_obj_set_style_text_color(lbl_gps_coords, COLOR_EMERALD, 0);
+            lv_label_set_long_mode(lbl_gps_coords, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_align(lbl_gps_coords, LV_TEXT_ALIGN_CENTER, 0);
             if (icon_gps) {
                 lv_obj_set_style_text_color(icon_gps, COLOR_EMERALD, 0);
             }
@@ -596,4 +620,100 @@ void gui_manager_show_alert(const char *code, float voltage) {
 
 void gui_manager_clear_alert(void) {
     ESP_LOGI(TAG, "Alerta limpo via Mesh");
+}
+
+void gui_manager_show_tag_screen(const char *tag) {
+    if (!tag || !tag[0]) return;
+
+    // Se ja existe um overlay ativo, NAO substitui — deixa a tag atual mostrar por 4s.
+    // Isso evita flashing quando tags chegam em rapida sucessao.
+    if (tag_overlay) {
+        ESP_LOGI(TAG, "Tag screen ja ativa, ignorando: %s", tag);
+        return;
+    }
+
+    // Cria overlay branco fullscreen
+    tag_overlay = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(tag_overlay, 240, 320);
+    lv_obj_set_style_bg_color(tag_overlay, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(tag_overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(tag_overlay, 0, 0);
+    lv_obj_set_style_radius(tag_overlay, 0, 0);
+    lv_obj_clear_flag(tag_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(tag_overlay, 0, 0);
+
+    // Titulo "BRINCO LIDO"
+    lv_obj_t *title = lv_label_create(tag_overlay);
+    lv_label_set_text(title, "BRINCO LIDO");
+    lv_obj_set_style_text_color(title, lv_color_black(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -40);
+
+    // Separador
+    lv_obj_t *sep = lv_obj_create(tag_overlay);
+    lv_obj_set_size(sep, 200, 2);
+    lv_obj_set_style_bg_color(sep, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(sep, LV_OPA_30, 0);
+    lv_obj_set_style_border_width(sep, 0, 0);
+    lv_obj_align(sep, LV_ALIGN_CENTER, 0, -5);
+
+    // Numero da tag
+    lv_obj_t *tag_label = lv_label_create(tag_overlay);
+    lv_label_set_text(tag_label, tag);
+    lv_obj_set_style_text_color(tag_label, lv_color_black(), 0);
+    lv_obj_set_style_text_font(tag_label, &lv_font_montserrat_16, 0);
+    lv_obj_align(tag_label, LV_ALIGN_CENTER, 0, 30);
+
+    // Timer de 4 segundos para remover
+    tag_overlay_timer = lv_timer_create(tag_overlay_remove_cb, 4000, NULL);
+    lv_timer_set_repeat_count(tag_overlay_timer, 1);
+
+    ESP_LOGI(TAG, "Tag screen exibida: %s", tag);
+}
+
+void gui_manager_refresh_history(void) {
+    if (!history_list) return;
+
+    /* Limpa a lista atual */
+    lv_obj_clean(history_list);
+
+    /* Atualiza cabecalho */
+    lv_obj_t *parent = lv_obj_get_parent(history_list);
+    if (parent) {
+        lv_obj_t *header = lv_obj_get_child(parent, 0);
+        if (header) {
+            lv_obj_t *header_lbl = lv_obj_get_child(header, 0);
+            if (header_lbl) {
+                tag_day_summary_t sum = tag_database_get_summary();
+                char hdr[48];
+                snprintf(hdr, sizeof(hdr), LV_SYMBOL_EYE_OPEN "  %lu ler. | %lu unicos",
+                         sum.total_reads, sum.unique_tags);
+                lv_label_set_text(header_lbl, hdr);
+            }
+        }
+    }
+
+    /* Popula com as ultimas tags */
+    uint32_t count = tag_database_get_record_count();
+    uint32_t show = (count > 20) ? 20 : count;
+
+    for (uint32_t i = 0; i < show; i++) {
+        tag_record_t rec;
+        if (tag_database_get_record(i, &rec) != ESP_OK) continue;
+
+        char label[128];
+        if (rec.animal_name[0]) {
+            snprintf(label, sizeof(label), "%.40s  (%.40s)", rec.tag, rec.animal_name);
+        } else {
+            snprintf(label, sizeof(label), "%.60s", rec.tag);
+        }
+
+        lv_obj_t *btn = lv_list_add_btn(history_list, LV_SYMBOL_SD_CARD, label);
+        lv_obj_add_event_cb(btn, internal_obj_event_cb, LV_EVENT_KEY, NULL);
+    }
+
+    if (show == 0) {
+        lv_obj_t *empty = lv_list_add_btn(history_list, LV_SYMBOL_DIRECTORY, "Nenhuma tag lida hoje");
+        lv_obj_add_event_cb(empty, internal_obj_event_cb, LV_EVENT_KEY, NULL);
+    }
 }

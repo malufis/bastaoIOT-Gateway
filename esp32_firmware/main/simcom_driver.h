@@ -294,6 +294,26 @@ esp_err_t simcom_driver_send_sms(const char *phone_number, const char *message);
  */
 esp_err_t simcom_driver_check_and_process_sms(void);
 
+/**
+ * @brief Verifica se o dispositivo tem localizacao disponivel (GPS ou torre celular).
+ * @return true se GPS fix ou torre celular valida
+ */
+bool simcom_driver_has_location(void);
+
+/**
+ * @brief Obtem localizacao approximada via torre celular (Mozilla Location Service).
+ * @param[out] lat Latitude
+ * @param[out] lon Longitude
+ * @return ESP_OK se obteve localizacao
+ */
+esp_err_t simcom_driver_get_cell_tower_location(double *lat, double *lon);
+
+/**
+ * @brief Verifica se os dados da torre celular estao validos.
+ * @return true se TAC/CID foram extraidos com sucesso
+ */
+bool simcom_driver_is_cell_tower_valid(void);
+
 #ifdef __cplusplus
 }
 #endif

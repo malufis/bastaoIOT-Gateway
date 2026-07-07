@@ -49,6 +49,12 @@ BLE Mesh ── display K10
 - ✅ Gerenciamento de energia (sleep mode)
 - ✅ Display K10: RFID, GPS, status celular, acelerômetro, bateria
 - ✅ Comunicação BLE Mesh em JSON simples (sem criptografia extra)
+- ✅ **Speaker I2S (K10):** Beep ao ler tag via NS4168 (short/long/double/alert)
+- ✅ **Tela "BRINCO LIDO" (K10):** Exibição fullscreen com tag + auto-dismiss 3s
+- ✅ **SPIFFS Contador (K10):** Banco de tags diárias `/spiffs/tags/YYYY-MM-DD.json`
+- ✅ **Aba Histórico (K10):** Lista das últimas 20 tags lidas
+- ✅ **GPS Gate:** Publicação MQTT só com localização (GPS ou cell tower fallback)
+- ✅ **Triangulação Celular:** Fallback via Mozilla Location Service (TAC/CID/EARFCN)
 - ⚠️ **OTA via 4G** não suportado (requer Wi-Fi)
 - ❌ **OTA na tela K10** não suportado (apenas USB/serial)
 
@@ -91,12 +97,20 @@ make -j4
 STM32 (RFID) ──UART──┐
                      v
               dispatcher_task (ESP32)
-                ├── JSON plain → BLE Mesh → K10 (RFID, GPS, Cell)
+                ├── rfid_dedup_is_duplicate() (janela 60s)
+                ├── GPS gate: has_location()?
+                │    ├── GPS fix → ok
+                │    ├── Cell tower → ok (fallback)
+                │    └── Sem localização → descarta do MQTT
+                ├── JSON plain → BLE Mesh → K10
                 ├── AES-256-CBC encrypt → MQTT → Nuvem
                 └── Cache offline (se MQTT offline)
 
 K10 Display:
-  ┌─ RFID tag, animal name
+  ┌─ Tela "BRINCO LIDO" (auto-dismiss 3s)
+  ├─ Speaker I2S beep (NS4168)
+  ├─ SPIFFS: grava tag em /spiffs/tags/YYYY-MM-DD.json
+  ├─ Aba Histórico: últimas 20 tags
   ├─ GPS coordinates (6 casas decimais)
   ├─ 4G status (verde/vermelho)
   ├─ Accelerometer data

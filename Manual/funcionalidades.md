@@ -144,6 +144,61 @@ O firmware do ESP32 é construído sobre o ESP-IDF v5.x com uma estrutura multit
      * Os registros são estruturados em arquivos sequenciais simulando uma fila FIFO (First-In, First-Out).
   3. **Limite e Proteção de Memória**:
      * É configurada uma partição flash dedicada para cache. Caso a partição atinja 95% de uso, o sistema bloqueia novos registros e ativa uma sinalização visual/audível no bastão para evitar estouro de memória.
-  4. **Recuperação e Sincronização Posterior**:
-     * Quando a conectividade com o Broker MQTT é restabelecida, uma rotina de transmissão em background lê os arquivos da flash, publica os payloads antigos na nuvem e os apaga apenas após a confirmação de entrega (ACK MQTT) do broker.
+   4. **Recuperação e Sincronização Posterior**:
+      * Quando a conectividade com o Broker MQTT é restabelecida, uma rotina de transmissão em background lê os arquivos da flash, publica os payloads antigos na nuvem e os apaga apenas após a confirmação de entrega (ACK MQTT) do broker.
+
+---
+
+## 3. Funcionalidades da Tela K10 (Display + BLE Mesh Node)
+
+A Tela K10 é um dispositivo ESP32-S3 com display LVGL 480x480 que atua como nó BLE Mesh, exibindo dados recebidos do Coordenador e gerenciando interface local.
+
+### 3.1. Speaker I2S (NS4168)
+* **Objetivo:** Emitir sons de confirmação ao ler tags RFID.
+* **Funcionamento:**
+  1. Driver I2S configurado com `driver/i2s_std.h` (API nova ESP-IDF v5.4.4).
+  2. Pinos: BCLK=GPIO0, LRCK=GPIO38, SDO=GPIO45 (MCLK não conectado).
+  3. Geração de sine wave 44100Hz/16-bit/mono.
+  4. Tipos de beep: `short` (100ms), `long` (300ms), `double` (2x short), `alert` (2kHz contínuo).
+  5. Chamado no `main.c` a cada leitura RFID válida.
+
+### 3.2. Tela "BRINCO LIDO"
+* **Objetivo:** Exibir confirmação visual de leitura de tag.
+* **Funcionamento:**
+  1. Tela branca fullscreen com texto "BRINCO LIDO" + número da tag.
+  2. Auto-dismiss após 3 segundos via `lv_timer_create()`.
+  3. Texto "GPS SINCRONIZADO" exibido abaixo de lat/lon quando `fix=true`.
+
+### 3.3. SPIFFS + Contador Diário
+* **Objetivo:** Persistir leituras de tags em armazenamento local.
+* **Funcionamento:**
+  1. Componente `tag_database/` gerencia banco de tags diárias.
+  2. Partição SPIFFS (2MB em 0x310000) com arquivos JSON por data.
+  3. Formato: `/spiffs/tags/YYYY-MM-DD.json`.
+  4. Buffer em RAM com auto-save a cada 10 reads.
+  5. Cada registro contém: tag ID, nome animal, timestamp.
+
+### 3.4. Aba Histórico (Tab2)
+* **Objetivo:** Exibir últimas leituras na tela.
+* **Funcionamento:**
+  1. Header com ícone olho + total de leituras + tags únicas.
+  2. Lista scrollável com últimas 20 tags (tag ID + nome animal).
+  3. Atualizado a cada leitura via `gui_manager_refresh_history()`.
+
+### 3.5. Exibição de Dados Recebidos via Mesh
+* **Objetivo:** Mostrar dados do Coordenador em tempo real.
+* **Funcionamento:**
+  1. **GPS:** Coordenadas reais do Coordenador (verde) ou "GPS NAO SINCRONIZADO" (vermelho).
+  2. **Bateria:** Percentual 0-100% via Mesh (não do STM32).
+  3. **4G:** Barras de sinal mapeadas de RSSI (dBm).
+  4. **RFID:** Ícone verde se STM32 ativo, vermelho se inativo.
+  5. **Backlight:** Timeout 120s, wake por botão ou tag RFID.
+
+### 3.6. GPS Gate (Publicação Condicional)
+* **Objetivo:** Publicar MQTT somente com localização válida.
+* **Funcionamento:**
+  1. Dispatcher verifica `simcom_driver_has_location()`.
+  2. **GPS fix:** publica com coordenadas GPS.
+  3. **Cell tower fallback:** usa triangulação via Mozilla Location Service.
+  4. **Sem localização:** tag enviada à K10 via Mesh (exibição), mas descartada do MQTT.
 

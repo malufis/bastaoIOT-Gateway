@@ -1311,6 +1311,154 @@ Orchestrator (1s loop):            GPS Reader Task (background):
 
 ---
 
+## Sessão 20 — 5 Melhorias: Buzzer I2S, Tela Brinco, SPIFFS, Histórico, GPS Gate
+**Data:** 2026-07-02
+**Objetivo:** Implementar 5 melhorias solicitadas: buzzer via speaker I2S, tela "BRINCO LIDO", contagem diária via SPIFFS, aba de histórico, e gate de publicação MQTT por GPS.
+
+### Problemas Resolvidos
+
+**Feature 1 — Buzzer via I2S (Speaker NS4168):**
+- Buzzer GPIO original era mono e sem controle de pitch
+- Implementado driver I2S com sine wave em `k10_hal/hal_buzzer.c/.h`
+- Usa driver `i2s_std.h` (API nova ESP-IDF v5.4.4)
+- Pinos: BCLK=GPIO0, LRCK=GPIO38, SDO=GPIO45 (MCLK não usado)
+- Beep types: short(100ms), long(300ms), double, alert(2kHz)
+- Canal I2S fica DESABILITADO entre beeps para economizar energia e evitar resíduo de áudio
+
+**Feature 2 — Tela "BRINCO LIDO":**
+- Tela branca fullscreen com "BRINCO LIDO" + número da tag
+- Auto-dismiss após 3s via `lv_timer_create()`
+- Texto "GPS SINCRONIZADO" exibido abaixo de lat/lon quando fix=true
+- Corrigido `lv_font_montserrat_28` → `lv_font_montserrat_24`
+- Habilitado `CONFIG_LV_FONT_MONTSERRAT_20=y` e `CONFIG_LV_FONT_MONTSERRAT_24=y` em sdkconfig
+
+**Feature 3 — SPIFFS + Contador Diário:**
+- Novo componente `tag_database/` com `tag_database.c/.h`
+- Partição SPIFFS (2MB em 0x310000) adicionada ao `partitions.csv`
+- Arquivos JSON por data (`/spiffs/tags/YYYY-MM-DD.json`)
+- Buffer em RAM com auto-save a cada 10 reads
+- Flash K10 atualizada 4MB→16MB em sdkconfig
+
+**Feature 4 — Aba Histórico (Tab2):**
+- Reescrito `create_screen_connectivity()` → `create_screen_history()`
+- Header com ícone olho + total de leituras + tags únicas
+- Lista scrollável com últimas 20 tags (tag ID + nome animal)
+- `gui_manager_refresh_history()` chamado após cada leitura RFID
+- Ícone da aba mudado de WiFi→LIST
+
+**Feature 5 — GPS Gate + Triangulação Celular:**
+- Extraído TAC/CID/EARFCN de `AT+CPSI?` em `query_cpsi_metrics()`
+- Adicionada `cell_tower_get_location()` via Mozilla Location Service HTTPS POST
+- Adicionadas `simcom_driver_has_location()`, `simcom_driver_get_cell_tower_location()`, `simcom_driver_is_cell_tower_valid()`
+- Dispatcher: GPS优先 → cell tower fallback → sem localização: tag descartada do MQTT (mas enviada via BLE Mesh)
+- Compilação validada: ESP32 e K10 OK
+
+### Atualizações de Partição/Flash
+- ESP32: OTA 1728KB→4MB cada, SPIFFS 512KB→2MB, flash 4MB→16MB
+- K10: factory 3MB, spiffs 2MB, flash 4MB→16MB
+
+### Arquivos Criados
+- `k10_firmware/components/k10_hal/hal_buzzer.c/.h` — Driver I2S para speaker NS4168
+- `k10_firmware/components/tag_database/tag_database.c/.h` — Banco de tags SPIFFS
+- `k10_firmware/components/tag_database/CMakeLists.txt` — REQUIRES vfs spiffs json
+
+### Arquivos Modificados
+- `k10_firmware/components/gui/gui_manager.c` — Tela brinco, GPS sync text, Tab2 histórico
+- `k10_firmware/components/gui/include/gui_manager.h` — Protótipos novos
+- `k10_firmware/components/gui/CMakeLists.txt` — Adicionado `tag_database`
+- `k10_firmware/components/k10_hal/CMakeLists.txt` — Adicionado `hal_buzzer.c`
+- `k10_firmware/main/main.c` — RFID: buzzer + tela brinco + SPIFFS + histórico
+- `k10_firmware/main/CMakeLists.txt` — Adicionado `tag_database`
+- `k10_firmware/partitions.csv` — SPIFFS 2MB, factory 3MB
+- `k10_firmware/sdkconfig.defaults` — Flash 16MB
+- `k10_firmware/sdkconfig` — Flash 16MB, fonts 20/24
+- `esp32_firmware/main/simcom_driver.c` — TAC/CID/EARFCN, cell tower location
+- `esp32_firmware/main/simcom_driver.h` — 3 novas APIs públicas
+- `esp32_firmware/main/main.c` — GPS-gated MQTT com cell tower fallback
+- `esp32_firmware/partitions.csv` — OTA 4MB, SPIFFS 2MB, flash 16MB
+- `esp32_firmware/sdkconfig.defaults` — Flash 16MB
+- `esp32_firmware/sdkconfig` — Flash 16MB
+
+### Lições Aprendidas
+- `esp_vfs` renomeado para `vfs` no ESP-IDF v5.4.4 — `tag_database` usa `REQUIRES vfs spiffs json`
+- `lv_font_montserrat_28` não existe — usar `lv_font_montserrat_24`
+- `driver/i2s_std.h` é a API nova (ESP-IDF v5.4.4); `driver/i2s.h` é legacy
+- Variável `err` do dispatcher ficava fora de escopo ao declarar `mqtt_err` local — resolvido declarando dentro do bloco RFID
+- `format-truncation` warning corrigido com `%.40s` no snprintf
+
+---
+
+## Sessão 46 — Correção Final Buzzer I2S + Ajustes Tela K10
+**Data:** 2026-07-07
+**Objetivo:** Corrigir bip contínuo do speaker NS4168, ajustar pinagem I2S, reduzir fontes da tela de leitura e aba de histórico, adicionar beeps de boot.
+
+### Pinagem Correta do Speaker NS4168 (K10)
+
+| Sinal | GPIO (antes errado) | GPIO (correto) |
+|-------|---------------------|-----------------|
+| BCLK | ~~40~~ | **0** |
+| LRCK (WS) | ~~41~~ | **38** |
+| SDO (TX do ESP32) | ~~39~~ | **45** |
+| MCLK | ~~3~~ | **NC (não conectado)** |
+
+### Problemas Resolvidos
+
+**Bug 1 — Bip contínuo (loop infinito):**
+- O canal I2S era habilitado no `init` e **nunca desabilitado**. Após tocar um beep, os clocks BCLK/LRCK continuavam ativos, e o NS4168 mantinha a saída de áudio reproduzindo resíduos do DMA.
+- Solução: Canal fica **DESABILITADO** entre beeps. `play_tone()` habilita → toca → silêncio → desabilita.
+- DMA reduzido de 6→2 descritores para minimizar dados residuais.
+- Escrita de silêncio (8 blocos de 128 samples) antes de desabilitar, para limpar pipeline interno do NS4168.
+
+**Bug 2 — Pinos I2S errados:**
+- Os pinos documentados (MCLK=3, BCLK=40, LRCK=41, SDO=39) foram corrigidos conforme schematics da K10.
+- Pinos corretos: BCLK=GPIO0, LRCK=GPIO38, SDO=GPIO45, sem MCLK.
+
+**Bug 3 — Flash do display (piscava):**
+- `vTaskDelay()` no loop principal bloqueava o `lv_timer_handler()`, causando flicker.
+- Removido `vTaskDelay()` do código de beep.
+
+**Bug 4 — Exibição de tag ID muito grande:**
+- `lv_font_montserrat_24` → `16` no tag ID da tela de leitura
+- `lv_font_montserrat_20` → `20` no título "BRINCO LIDO"
+- `lv_font_montserrat_14` → `12` nos itens da lista de histórico
+- `lv_font_montserrat_20` → `18` no header do histórico
+- Habilitado `CONFIG_LV_FONT_MONTSERRAT_12`, `16`, `18`, `20` em sdkconfig
+
+### Melhorias Adicionadas
+
+**Beeps de boot (não dependem de Mesh):**
+- 3 beeps curtos (100ms, 300ms entre eles) executados logo após `gui_manager_init()`
+- Ocorrem antes de qualquer conexão Mesh, confirmando que o speaker funciona
+
+**Timestamp corrigido no SPIFFS:**
+- `tag_database_add()` usava `0` como timestamp — corrigido para `(uint32_t)time(NULL)`
+- Incluído `<time.h>` em `tag_database.c`
+
+**Dedup local na tela de leitura:**
+- `gui_manager_show_tag_screen()` agora tem guard anti-flashing: se overlay já ativo, apenas atualiza timer (não recria tela)
+- Timer de dismiss: 3s → 4s
+
+**Limpeza de variáveis estáticas:**
+- `last_x/y/z` movidas do escopo `if(k10_mesh_is_ready())` para escopo externo, compartilhadas entre polling periódico e handler RFID
+
+### Arquivos Modificados
+- `k10_firmware/components/k10_hal/hal_buzzer.c` — Driver I2S reescrito (canal desabilitado entre beeps)
+- `k10_firmware/components/k10_hal/include/hal_buzzer.h` — API pública
+- `k10_firmware/components/gui/gui_manager.c` — Fontes reduzidas, anti-flash guard, histórico
+- `k10_firmware/components/gui/include/gui_manager.h` — Protótipos novos
+- `k10_firmware/components/tag_database/tag_database.c` — Timestamp time(NULL), `<time.h>`
+- `k10_firmware/main/main.c` — Beeps de boot, RFID handler sem vTaskDelay bloqueante
+- `k10_firmware/sdkconfig` + `sdkconfig.defaults` — Fontes 12/16/18/20 habilitadas
+
+### Lições Aprendidas
+- **I2S DMA NÃO para sozinho**: Após `i2s_channel_write()`, os clocks BCLK/LRCK continuam mesmo sem dados. A única forma de parar o áudio é `i2s_channel_disable()`.
+- **NS4168 sem MCLK funciona** no modo slave (clock via BCLK), desde que o ESP32 seja master I2S.
+- **vTaskDelay no mesmo core do LVGL causa flicker** — toda operação bloqueante deve ser delegada a outro core ou task.
+- **newlib-nano no STM32 não suporta %llu** — usar conversão manual para uint64_t (Sessão 25).
+- O fluxo disable→enable no final do `play_tone()` é atômico o suficiente para evitar race conditions com a task de beep.
+
+---
+
 ## Referência Rápida de Comandos
 
 ```powershell

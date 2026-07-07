@@ -45,4 +45,17 @@ void gui_manager_show_alert(const char *code, float voltage);
  */
 void gui_manager_clear_alert(void);
 
+/**
+ * @brief Exibe tela de leitura RFID (overlay branco com tag por 3s).
+ *        Chamada a toda leitura, independente de dedup.
+ */
+void gui_manager_show_tag_screen(const char *tag);
+
+/**
+ * @brief Atualiza a lista de historico de tags (Tab2).
+ *
+ * Chamado apos cada nova tag registrada no banco de dados.
+ */
+void gui_manager_refresh_history(void);
+
 #endif

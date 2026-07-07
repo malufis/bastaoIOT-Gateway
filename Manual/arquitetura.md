@@ -38,6 +38,25 @@ Responsável pelo tráfego de rede e segurança de dados:
 * **Bluetooth (Interno)**: Comunicação segura ponto a ponto com aplicativo de celular (GATT Server) para tráfego de dados de configuração e de negócio (Fazenda, Lote e Animal).
 * **Wi-Fi (Interno)**: Conexão local em bases carregadoras/currais para transmissão de dados de alta velocidade e atualizações remotas de firmware (OTA).
 
+### 2.3. Tela K10 (ESP32-S3 Display)
+Display LVGL 480x480 com BLE Mesh Node, speaker I2S e sensores locais:
+
+| Pino | Função | Nota |
+|------|--------|------|
+| GPIO0 | I2S BCLK | Speaker NS4168 |
+| GPIO38 | I2S LRCK | Speaker NS4168 |
+| GPIO45 | I2S SDO (TX) | Speaker NS4168 |
+| — | MCLK | NC (não conectado) |
+| GPIO46 | WS2812 | RGB LED (3 LEDs) |
+| GPIO47 | I2C SDA | XL9535, Acelerômetro |
+| GPIO48 | I2C SCL | XL9535, Acelerômetro |
+
+**Partições K10:**
+- `factory` (3MB) → Firmware K10
+- `spiffs` (2MB) → Banco de tags diárias
+- `nvs` (24KB) → Configurações BLE Mesh
+- Flash total: 16MB
+
 ---
 
 ## 3. Fluxo de Dados e Integração (Pipeline)

@@ -1372,6 +1372,7 @@ esp_err_t simcom_driver_download_agps(void) {
     /* Prepara para receber URC +AGPS:success./+AGPS:<err> */
     agps_success = false;
     agps_error_code = 0;
+    esp_err_t agps_result = ESP_FAIL;  /* Assume falha ate confirmação */
     xSemaphoreTake(agps_sem, 0);  /* drena semaforo pendente */
 
     /* AT+CAGPS retorna OK imediatamente, +AGPS:success. chega como URC depois */
@@ -1384,10 +1385,12 @@ esp_err_t simcom_driver_download_agps(void) {
         if (xSemaphoreTake(agps_sem, pdMS_TO_TICKS(15000)) == pdTRUE) {
             if (agps_success) {
                 agps_downloaded = true;
+                agps_result = ESP_OK;
                 ESP_LOGI(TAG, "[AGPS] Dados AGNSS baixados com SUCESSO. GPS deve obter fix muito mais rapido.");
                 /* Reinicia GPS com dados de assistencia (Cold Start com efeméride) */
                 at_send_cmd("AT+CGPSCOLD\r\n", "OK", NULL, 0, 5000);
             } else {
+                agps_result = ESP_FAIL;
                 ESP_LOGW(TAG, "[AGPS] Falha no download AGNSS (erro=%d). GPS usara cold start puro.",
                          agps_error_code);
                 ESP_LOGW(TAG, "[AGPS] NOTA: Erro 106 = timeout/servidor inacessivel. Verificar conectividade 4G.");
@@ -1400,14 +1403,16 @@ esp_err_t simcom_driver_download_agps(void) {
                 }
             }
         } else {
+            agps_result = ESP_ERR_TIMEOUT;
             ESP_LOGW(TAG, "[AGPS] Timeout aguardando URC +AGPS (15s). GPS usara cold start puro.");
             ESP_LOGW(TAG, "[AGPS] Possivel causa: servidor AGNSS lento ou inacessivel.");
         }
     } else {
+        agps_result = err;
         ESP_LOGW(TAG, "[AGPS] Comando AT+CAGPS falhou (err=%d). GPS usara cold start puro.", err);
     }
 
-    return err;
+    return agps_result;
 }
 
 /* --- Metricas e Diagnosticos Cellular --- */

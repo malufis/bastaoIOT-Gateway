@@ -592,8 +592,9 @@ static esp_err_t at_init_sequence(void) {
                 msisdn_buf, sizeof(bastao_current_status.sim_msisdn[0]) - 1);
     }
 
-    // 6. Reportes de registro
+    // 6. Reportes de registro (4G/LTE via CEREG, 2G/3G via CREG/CGREG)
     ESP_LOGI(TAG, "[INIT] Step 6: habilitando reportes de rede...");
+    at_send_cmd("AT+CEREG=1\r\n", "OK", NULL, 0, 3000);
     at_send_cmd("AT+CREG=1\r\n", "OK", NULL, 0, 3000);
     at_send_cmd("AT+CGREG=1\r\n", "OK", NULL, 0, 3000);
 
@@ -608,11 +609,25 @@ static esp_err_t wait_for_network_registration(uint32_t timeout_ms) {
     char resp[AT_RESPONSE_BUF_SIZE];
 
     while ((xTaskGetTickCount() * portTICK_PERIOD_MS - start) < timeout_ms) {
-        esp_err_t err = at_send_cmd("AT+CREG?\r\n", "+CREG:", resp, sizeof(resp), 3000);
+        // Tenta primeiro AT+CEREG? (4G/LTE). Se falhar, tenta AT+CREG? (2G/3G)
+        esp_err_t err = at_send_cmd("AT+CEREG?\r\n", "+CEREG:", resp, sizeof(resp), 3000);
         if (err == ESP_OK) {
             if (strstr(resp, ",1") != NULL || strstr(resp, ",5") != NULL) {
-                ESP_LOGI(TAG, "Modem registrado na rede celular.");
+                ESP_LOGI(TAG, "Modem registrado na rede 4G/LTE.");
                 return ESP_OK;
+            }
+            if (strstr(resp, ",0") != NULL) {
+                ESP_LOGD(TAG, "CEREG: modem NAO registrado (stat=0). Continuando busca...");
+            }
+        } else {
+            ESP_LOGD(TAG, "CEREG falhou (err=%d). Tentando CREG...", err);
+            // Fallback: AT+CREG? para compatibilidade com redes 2G/3G
+            err = at_send_cmd("AT+CREG?\r\n", "+CREG:", resp, sizeof(resp), 3000);
+            if (err == ESP_OK) {
+                if (strstr(resp, ",1") != NULL || strstr(resp, ",5") != NULL) {
+                    ESP_LOGI(TAG, "Modem registrado na rede (2G/3G).");
+                    return ESP_OK;
+                }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(2000));
@@ -2139,11 +2154,15 @@ static void simcom_watchdog_task(void *pvParameters) {
                 int slot = bastao_current_status.active_sim_slot;
                 bastao_current_status.sim_rssi[slot] = rssi;
 
-                // Verifica roaming via CREG
-                char creg[128];
-                if (at_send_cmd("AT+CREG?\r\n", "+CREG:", creg, sizeof(creg), 3000) == ESP_OK) {
-                    if (strstr(creg, ",5)") != NULL || strstr(creg, ",5\r") != NULL || strstr(creg, ",5\n") != NULL) {
-                        ESP_LOGW(TAG, "Watchdog: Slot %d em roaming (CREG stat=5). Sinal=%d dBm", slot, rssi);
+                // Verifica roaming via CEREG (4G) primeiro, depois CREG (2G/3G)
+                char reg_resp[128];
+                esp_err_t reg_err = at_send_cmd("AT+CEREG?\r\n", "+CEREG:", reg_resp, sizeof(reg_resp), 3000);
+                if (reg_err != ESP_OK) {
+                    reg_err = at_send_cmd("AT+CREG?\r\n", "+CREG:", reg_resp, sizeof(reg_resp), 3000);
+                }
+                if (reg_err == ESP_OK) {
+                    if (strstr(reg_resp, ",5)") != NULL || strstr(reg_resp, ",5\r") != NULL || strstr(reg_resp, ",5\n") != NULL) {
+                        ESP_LOGW(TAG, "Watchdog: Slot %d em roaming (stat=5). Sinal=%d dBm", slot, rssi);
                     }
                 }
 

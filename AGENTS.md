@@ -1717,6 +1717,72 @@ Boot → gps_power_on() → AT+CGNSSPWR=1 (OK, sem URC READY!)
 
 ---
 
+## Sessão 51 — Correção AGPS: PDP Context, IP Check, XTRA Fallback
+**Data:** 2026-07-08
+**Objetivo:** Resolver erro 106 adicionando verificacoes obrigatorias de conectividade 4G antes do AT+CAGPS.
+
+### Problemas Corrigidos
+
+**Bug1 — PDP Context nunca era ativado:**
+- `simcom_driver_configure_apn()` configurava `AT+CGDCONT` e `AT+CGATT=1` mas **nunca enviava `AT+CGACT=1,1`** para ativar o PDP context.
+- Sem PDP context ativo, o modem nao tem endereco IP, e `AT+CAGPS` falha com erro 106.
+- **Correção:** Adicionado `AT+CGACT=1,1` apos configurar APN e autenticacao.
+
+**Bug2 — Nao verificava se PDP context estava ativo antes do AGPS:**
+- Mesmo com `AT+CGACT` enviado no configure_apn, nao havia verificacao antes do AGPS.
+- Se o PDP context desativasse por queda de sinal, `AT+CAGPS` tentava sem IP.
+- **Correção:** Nova funcao `simcom_driver_check_pdp_context()` que:
+  1. Consulta `AT+CGACT?` para ver se contexto esta ativo
+  2. Se inativo, tenta reativar com `AT+CGACT=1,1`
+  3. Verifica endereco IP via `AT+CGPADDR=1`
+  4. Só prossegue se tiver IP valido
+
+**Bug3 — Nao detectava se firmware usa XTRA em vez de AT+CAGPS:**
+- Alguns firmwares A7663 usam `AT+CGPSXD` (XTRA) em vez de `AT+CAGPS`.
+- Se erro 106 persistir, pode ser que o firmware precise de XTRA.
+- **Correção:** Nova funcao `simcom_driver_check_xtra_support()` que testa `AT+CGPSXD=?` e loga resultado.
+
+### Fluxo Novo (completamente validado)
+```
+simcom_driver_configure_apn():
+  → wait_for_network_registration (60s)
+  → AT+CGATT=1 (GPRS attach)
+  → AT+CGDCONT=1,"IP","<apn>"
+  → AT+CGAUTH=1,1,"user","pass"
+  → AT+CGACT=1,1 ← NOVO! Ativa PDP context (timeout 15s)
+  → modem_state = SIMCOM_STATE_REGISTERED
+
+simcom_driver_download_agps():
+  → power_on GNSS
+  → configure_gnss (CGNSSMODE=7)
+  → query_gnss_status (AT+CGNSSPWR?)
+  → CHECK_PDP_CONTEXT(): ← NOVO!
+      → AT+CGACT? (PDP ativo?)
+      → Se nao → AT+CGACT=1,1 (reativa)
+      → AT+CGPADDR=1 (tem IP?)
+      → Se sem IP → return ESP_FAIL
+  → AT+CAGPS (timeout 12s)
+  → Aguarda URC +AGPS (timeout 15s)
+  → Se erro 106 → check_xtra_support() para diagnostico
+```
+
+### Diagnóstico vs Nosso Código (antes/depois)
+
+| Etapa | Antes | Depois |
+|:------|:-----:|:------:|
+| `AT+CGATT=1` | ✅ | ✅ |
+| `AT+CGDCONT` | ✅ | ✅ |
+| `AT+CGACT=1,1` | ❌ | ✅ |
+| `AT+CGACT?` (verifica) | ❌ | ✅ |
+| `AT+CGPADDR=1` (IP) | ❌ | ✅ |
+| `AT+CGPSXD=?` (XTRA) | ❌ | ✅ (fallback) |
+| `AT+CCLK?` (relógio) | ❌ | ❌ (futuro) |
+
+### Arquivos Modificados
+- `esp32_firmware/main/simcom_driver.c`: configure_apn() com CGACT, 3 novas funcoes (check_pdp_context, check_xtra_support, query_gnss_status), download_agps() com verificacoes
+
+---
+
 ## Referência Rápida de Comandos
 
 ```powershell

@@ -63,6 +63,11 @@ static bool gnss_ready = false;
 /** @brief Flag indicando se dados AGPS foram baixados com sucesso. */
 static bool agps_downloaded = false;
 
+/** @brief Semaforo para sinalizar resultado do AGPS (URC +AGPS:success./+AGPS:<err>) */
+static SemaphoreHandle_t agps_sem = NULL;
+static bool agps_success = false;
+static int agps_error_code = 0;
+
 /** @brief APN configurada no sistema. */
 static simcom_apn_config_t stored_apn = {0};
 
@@ -253,6 +258,19 @@ static void process_simcom_line(const char *line) {
     else if (strncmp(line, "+CGNSSPWR:READY!", 15) == 0) {
         gnss_ready = true;
         ESP_LOGI(TAG, "URC GNSS: Chip GNSS pronto (+CGNSSPWR:READY!).");
+    }
+    else if (strncmp(line, "+AGPS:success.", 13) == 0) {
+        agps_success = true;
+        agps_error_code = 0;
+        if (agps_sem != NULL) xSemaphoreGive(agps_sem);
+        ESP_LOGI(TAG, "URC AGPS: Dados AGNSS baixados com sucesso.");
+    }
+    else if (strncmp(line, "+AGPS:", 6) == 0) {
+        /* +AGPS:<errorcode>. — falha no download */
+        agps_success = false;
+        agps_error_code = atoi(line + 6);
+        if (agps_sem != NULL) xSemaphoreGive(agps_sem);
+        ESP_LOGW(TAG, "URC AGPS: Falha no download (erro=%d).", agps_error_code);
     }
     else if (strncmp(line, "+CMQTTCONNLOST:", 15) == 0) {
         ESP_LOGW(TAG, "URC MQTT: Conexao perdida com o broker.");
@@ -600,6 +618,9 @@ esp_err_t simcom_driver_init(void) {
     }
     if (response_sem == NULL) {
         response_sem = xSemaphoreCreateBinary();
+    }
+    if (agps_sem == NULL) {
+        agps_sem = xSemaphoreCreateBinary();
     }
 
     if (!uart_is_driver_installed(SIMCOM_UART_PORT)) {
@@ -1153,27 +1174,32 @@ esp_err_t simcom_driver_download_agps(void) {
 
     /* Baixa dados de assistencia do servidor AGNSS via 4G */
     ESP_LOGI(TAG, "[AGPS] Baixando dados de assistencia GNSS (AT+CAGPS)...");
-    char agps_resp[AT_RESPONSE_BUF_SIZE];
-    esp_err_t err = at_send_cmd("AT+CAGPS\r\n", "+AGPS:", agps_resp, sizeof(agps_resp), 9000);
+
+    /* Prepara para receber URC +AGPS:success./+AGPS:<err> */
+    agps_success = false;
+    agps_error_code = 0;
+    xSemaphoreTake(agps_sem, 0);  /* drena semaforo pendente */
+
+    /* AT+CAGPS retorna OK imediatamente, +AGPS:success. chega como URC depois */
+    esp_err_t err = at_send_cmd("AT+CAGPS\r\n", "OK", NULL, 0, 3000);
 
     if (err == ESP_OK) {
-        if (strstr(agps_resp, "+AGPS:success.") != NULL) {
-            agps_downloaded = true;
-            ESP_LOGI(TAG, "[AGPS] Dados AGNSS baixados com SUCESSO. GPS deve obter fix muito mais rapido.");
-            /* Reinicia GPS com dados de assistencia (Cold Start com efeméride) */
-            at_send_cmd("AT+CGPSCOLD\r\n", "OK", NULL, 0, 5000);
+        /* Aguarda URC +AGPS:success./+AGPS:<err> — timeout 10s */
+        if (xSemaphoreTake(agps_sem, pdMS_TO_TICKS(10000)) == pdTRUE) {
+            if (agps_success) {
+                agps_downloaded = true;
+                ESP_LOGI(TAG, "[AGPS] Dados AGNSS baixados com SUCESSO. GPS deve obter fix muito mais rapido.");
+                /* Reinicia GPS com dados de assistencia (Cold Start com efeméride) */
+                at_send_cmd("AT+CGPSCOLD\r\n", "OK", NULL, 0, 5000);
+            } else {
+                ESP_LOGW(TAG, "[AGPS] Falha no download AGNSS (erro=%d). GPS usara cold start puro.",
+                         agps_error_code);
+            }
         } else {
-            ESP_LOGW(TAG, "[AGPS] Resposta inesperada: %s", agps_resp);
+            ESP_LOGW(TAG, "[AGPS] Timeout aguardando URC +AGPS (10s). GPS usara cold start puro.");
         }
     } else {
-        /* Analisa codigo de erro */
-        int err_code = 0;
-        char *p = strstr(agps_resp, "+AGPS:");
-        if (p) {
-            err_code = atoi(p + 6);
-        }
-        ESP_LOGW(TAG, "[AGPS] Falha ao baixar dados AGNSS (erro=%d, resp=%s). GPS usa cold start puro.",
-                 err_code, agps_resp);
+        ESP_LOGW(TAG, "[AGPS] Comando AT+CAGPS falhou (err=%d). GPS usara cold start puro.", err);
     }
 
     return err;

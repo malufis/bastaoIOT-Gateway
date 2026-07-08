@@ -748,4 +748,16 @@
   - `esp32_firmware/main/simcom_driver.h` (modificado)
   - `esp32_firmware/main/main.c` (modificado)
 
+### Phase 69: Correção URC AGPS (AT+CAGPS retorna OK, +AGPS:success. é URC)
+- **Status:** complete
+- **Actions taken:**
+  - Identificado que `AT+CAGPS` retorna `OK` imediatamente e `+AGPS:success.` chega como URC assíncrono.
+  - Corrigido `simcom_driver_download_agps()`: `expected_resp` mudado de `"+AGPS:"` para `"OK"`.
+  - Adicionado handler URC `+AGPS:success.` e `+AGPS:<error>` em `process_simcom_line()`.
+  - Adicionado semáforo `agps_sem` para aguardar URC AGPS (timeout 10s).
+  - Inicialização do semáforo em `simcom_driver_init()`.
+  - Antes: sempre falhava (`ret=-1`). Depois: aguarda URC assíncrono corretamente.
+- **Files modified:**
+  - `esp32_firmware/main/simcom_driver.c` (modificado)
+
 

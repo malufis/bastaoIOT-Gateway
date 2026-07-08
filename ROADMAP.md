@@ -590,6 +590,17 @@ As próximas etapas cobrem a implementação do Wi-Fi STA, a inteligência de co
   - Invalidação automática quando CID da torre muda (handover/roaming).
   - Tags RFID processadas sem delay por geolocalização.
 
+### **Fase 69: Correção URC AGPS (OK imediato, +AGPS:success. é URC)** - **Concluido**
+
+- **Objetivo:** Corrigir falha no download A-GPS onde `AT+CAGPS` retornava OK mas +AGPS:success. nunca era detectado.
+- **Status:** Concluido.
+- **Tarefas Realizadas:**
+  - Identificado que `AT+CAGPS` retorna `OK` imediatamente e `+AGPS:success.` chega como URC assíncrono.
+  - Corrigido `simcom_driver_download_agps()`: espera `OK` como resposta, depois aguarda URC via semáforo.
+  - Handler URC `+AGPS:success.` e `+AGPS:<error>` em `process_simcom_line()`.
+  - Semáforo `agps_sem` com timeout de 10s para AGNSS download.
+  - Antes: falhava sempre (`ret=-1`). Depois: correto.
+
 ---
 
 ### **Fase 44 (Planejada): OTA via Celular (4G)**

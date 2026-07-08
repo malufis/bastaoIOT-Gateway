@@ -1581,6 +1581,43 @@ Depois: orchestrator (5min) → update_cell_tower_cache() → HTTP 10s (backgrou
 
 ---
 
+## Sessão 49 — Correção URC AGPS (AT+CAGPS retorna OK imediato, +AGPS:success. é URC)
+**Data:** 2026-07-07
+**Objetivo:** Corrigir falha no download A-GPS onde `AT+CAGPS` retornava `OK` mas `+AGPS:success.` nunca era detectado.
+
+### Problema
+- `AT+CAGPS` retorna `OK` imediatamente (comando aceito)
+- O resultado (`+AGPS:success.` ou `+AGPS:<erro>`) chega **depois** como URC assíncrono
+- O código esperava `+AGPS:` na resposta do comando → nunca encontrava → `ESP_FAIL`
+
+### Log do Erro (antes da correção)
+```
+AT TX >> AT+CAGPS
+AT RX << AT+CAGPS\r\nOK\r\n
+at_send_cmd_internal: ret=-1 cmd=AT+CAGPS  ← expected "+AGPS:" nao encontrado
+[AGPS] Falha ao baixar dados AGNSS (erro=0). GPS usa cold start puro.
+```
+
+### Solução
+- `at_send_cmd("AT+CAGPS\r\n", "OK", NULL, 0, 3000)` — espera `OK` como resposta
+- Handler URC `+AGPS:success.` e `+AGPS:<err>` em `process_simcom_line()`
+- Semáforo `agps_sem` para aguardar o URC após o comando retornar OK
+- Timeout de 10s para o URC AGPS (download pode levar segundos)
+
+### Fluxo Correto
+```
+at_send_cmd("AT+CAGPS", "OK")  → modem responde OK imediatamente
+  ↓ (assíncrono: modem baixa efeméride via socket TCP)
+URC +AGPS:success.  → process_simcom_line() → xSemaphoreGive(agps_sem)
+  ↓
+download_agps() detecta sucesso → AT+CGPSCOLD (reinicia GPS com dados)
+```
+
+### Modificações
+- `simcom_driver.c`: 3 vars (`agps_sem`, `agps_success`, `agps_error_code`), 2 handlers URC, init semáforo, `download_agps()` reescrito
+
+---
+
 ## Referência Rápida de Comandos
 
 ```powershell

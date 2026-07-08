@@ -1403,12 +1403,44 @@ esp_err_t simcom_driver_download_agps(void) {
                 agps_result = ESP_FAIL;
                 ESP_LOGW(TAG, "[AGPS] Falha no download AGNSS (erro=%d). GPS usara cold start puro.",
                          agps_error_code);
-                ESP_LOGW(TAG, "[AGPS] NOTA: Erro 106 = timeout/servidor inacessivel. Verificar conectividade 4G.");
-                /* Se erro 106, verifica se firmware usa XTRA como alternativa */
+                ESP_LOGW(TAG, "[AGPS] NOTA: Erro 106 = servidor AGNSS inacessivel. Verificar conectividade 4G.");
+                /* Se erro 106, tenta injectar posicao via torre 4G + timestamp como fallback */
                 if (agps_error_code == 106) {
-                    ESP_LOGI(TAG, "[AGPS] Testando suporte a XTRA (AT+CGPSXD) como alternativa...");
-                    if (simcom_driver_check_xtra_support()) {
-                        ESP_LOGI(TAG, "[AGPS] Firmware suporta XTRA. Caso AGPS continue falhando, considerar usar AT+CGPSXD.");
+                    if (cell_tower_location_valid) {
+                        time_t now = time(NULL);
+                        if (now > 1700000000) {
+                            ESP_LOGI(TAG, "[AGPS] Tentando injectar posicao da torre 4G + timestamp via AT+CAGPS=2...");
+                            char agps_param_cmd[128];
+                            snprintf(agps_param_cmd, sizeof(agps_param_cmd),
+                                     "AT+CAGPS=2,\"%.6f,%.6f\",2,\"%ld\"\r\n",
+                                     cached_cell_lat, cached_cell_lon, (long)now);
+                            /* Aguarda URC +AGPS:success./+AGPS:<err> */
+                            agps_success = false;
+                            agps_error_code = 0;
+                            xSemaphoreTake(agps_sem, 0);
+                            esp_err_t inj_err = at_send_cmd(agps_param_cmd, "OK", NULL, 0, 12000);
+                            if (inj_err == ESP_OK) {
+                                if (xSemaphoreTake(agps_sem, pdMS_TO_TICKS(15000)) == pdTRUE) {
+                                    if (agps_success) {
+                                        agps_downloaded = true;
+                                        agps_result = ESP_OK;
+                                        ESP_LOGI(TAG, "[AGPS] Posicao + timestamp injetados com SUCESSO! GPS tera fix acelerado.");
+                                        at_send_cmd("AT+CGPSCOLD\r\n", "OK", NULL, 0, 5000);
+                                    } else {
+                                        ESP_LOGW(TAG, "[AGPS] Injecao falhou (erro=%d). GPS usara cold start puro.",
+                                                 agps_error_code);
+                                    }
+                                } else {
+                                    ESP_LOGW(TAG, "[AGPS] Timeout aguardando injecao. GPS usara cold start puro.");
+                                }
+                            } else {
+                                ESP_LOGW(TAG, "[AGPS] Comando de injecao falhou. GPS usara cold start puro.");
+                            }
+                        } else {
+                            ESP_LOGW(TAG, "[AGPS] Sem timestamp valido (now=%ld). Injecao de posicao ignorada.", (long)now);
+                        }
+                    } else {
+                        ESP_LOGW(TAG, "[AGPS] Sem localizacao de torre 4G em cache. Injecao de posicao ignorada.");
                     }
                 }
             }

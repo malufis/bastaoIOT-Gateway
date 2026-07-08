@@ -1195,16 +1195,22 @@ static esp_err_t simcom_driver_check_pdp_context(void) {
         return err;
     }
 
-    // Resposta esperada: +CGPADDR: 1,"10.x.x.x" ou "100.x.x.x"
-    if (strstr(resp, "\"10.") != NULL || strstr(resp, "\"100.") != NULL || strstr(resp, "\"172.") != NULL) {
+    // Resposta esperada: +CGPADDR: 1,"10.x.x.x" (com ou sem aspas)
+    // Log do usuario: +CGPADDR: 1,10.64.210.90 (sem aspas!)
+    if (strstr(resp, "\"10.") != NULL || strstr(resp, "\"100.") != NULL || strstr(resp, "\"172.") != NULL ||
+        strstr(resp, ",10.")  != NULL || strstr(resp, ",100.") != NULL || strstr(resp, ",172.") != NULL) {
         ESP_LOGI(TAG, "[AGPS] Modem possui endereco IP: %s", resp);
         return ESP_OK;
     }
 
     // Pode ser IP publico tambem (menos comum em 4G)
-    if (strstr(resp, "\"") != NULL) {
-        ESP_LOGI(TAG, "[AGPS] Modem possui endereco IP: %s", resp);
-        return ESP_OK;
+    if (strstr(resp, "\"") != NULL || strstr(resp, ",") != NULL) {
+        // Tem algum conteudo depois da virgula (provavelmente um IP)
+        char *comma = strchr(resp, ',');
+        if (comma != NULL && *(comma + 1) != '\0' && *(comma + 1) != '"') {
+            ESP_LOGI(TAG, "[AGPS] Modem possui endereco IP: %s", resp);
+            return ESP_OK;
+        }
     }
 
     ESP_LOGW(TAG, "[AGPS] Modem NAO possui endereco IP (resposta: %s).", resp);
@@ -1307,9 +1313,6 @@ esp_err_t simcom_driver_configure_gnss(void) {
 }
 
 esp_err_t simcom_driver_download_agps(void) {
-    /* Registra timestamp para cooldown de retry */
-    agps_last_attempt = xTaskGetTickCount();
-
     if (!gps_powered_on) {
         ESP_LOGW(TAG, "[AGPS] GNSS desligado. Ligando primeiro...");
         esp_err_t e = simcom_driver_gps_power_on();
@@ -1353,6 +1356,9 @@ esp_err_t simcom_driver_download_agps(void) {
     /* Testa resolucao DNS (AT+CDNSGIP) — servidor AGNSS pode ser acessado por nome DNS */
     ESP_LOGI(TAG, "[AGPS] Testando resolucao DNS...");
     simcom_driver_check_dns();
+
+    /* Todas as verificacoes passaram. Registra timestamp para cooldown de retry */
+    agps_last_attempt = xTaskGetTickCount();
 
     /* Baixa dados de assistencia do servidor AGNSS via 4G */
     ESP_LOGI(TAG, "[AGPS] Baixando dados de assistencia GNSS (AT+CAGPS)...");

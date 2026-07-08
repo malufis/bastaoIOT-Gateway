@@ -1877,6 +1877,56 @@ GPS Reader Task:
 - `esp32_firmware/main/main.c`: gps_reader_task com retry de 3x com 2s
 - `esp32_firmware/main/simcom_driver.c`: agps_last_attempt, watchdog com AGPS retry e cooldown 300s
 
+---
+
+## Sessão 54 — Correção Parsing IP (CGPADDR sem aspas) + Cooldown AGPS
+**Data:** 2026-07-08
+**Objetivo:** Corrigir dois bugs que impediam AGPS de funcionar mesmo com 4G ativo.
+
+### Bug 1 — Parsing de IP (CGPADDR sem aspas)
+
+O modem retorna `+CGPADDR: 1,10.64.210.90` (sem aspas), mas o código procurava por `"10."` (com aspas):
+
+```
+AT+CGPADDR=1
++CGPADDR: 1,10.64.210.90   ← IP SEM ASPAS
+OK
+```
+
+**Log do erro:**
+```
+W (38119) SIMCOM_DRV: [AGPS] Modem NAO possui endereco IP (resposta: AT+CGPADDR=1
++CGPADDR: 1,10.64.210.90
+OK
+).
+E (38129) SIMCOM_DRV: [AGPS] SEM CONECTIVIDADE 4G! PDP Context inativo ou sem IP.
+```
+
+**Correção:** Adicionado `strstr(resp, ",10.")` e `",100."` e `",172."` para detectar IP sem aspas. Também adicionado fallback genérico que verifica se há conteúdo após a vírgula.
+
+### Bug 2 — Cooldown mal posicionado
+
+`agps_last_attempt` era setado no INÍCIO de `download_agps()`. Quando o PDP check falhava (antes mesmo de tentar AGPS), o cooldown já começava a contar. Quando MQTT conectava 2s depois, o watchdog via cooldown de 300s e não retentava.
+
+**Correção:** Movido `agps_last_attempt` para DEPOIS de todas as verificações (PDP, clock, DNS) passarem, imediatamente antes do `AT+CAGPS`. Assim, falhas de pré-verificação não iniciam o cooldown.
+
+### Fluxo Novo
+```
+Boot → download_agps():
+  → check_pdp_context() → FALHA (IP sem aspas nao detectado)
+  → agps_last_attempt NÃO atualizado (permanece 0)
+  → return ESP_ERR_INVALID_STATE
+  ↓ (2s depois)
+MQTT connect → watchdog detecta conexao
+  → !agps_downloaded → cooldown OK (last_attempt=0)
+  → download_agps():
+      → check_pdp_context() → OK! IP=10.64.210.90 ← AGORA DETECTA
+      → AT+CAGPS → aguarda resultado
+```
+
+### Arquivos Modificados
+- `esp32_firmware/main/simcom_driver.c`: Parsing IP corrigido (com/sem aspas), `agps_last_attempt` movido para após verificações
+
 ## Referência Rápida de Comandos
 
 ```powershell

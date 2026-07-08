@@ -1343,6 +1343,16 @@ esp_err_t simcom_driver_download_agps(void) {
     /* Configura constelacoes (GPS+BDS+GLONASS para mais satelites) */
     simcom_driver_configure_gnss();
 
+    /* Diagnostico: identifica chip GNSS (CASIC=ASR1601, UNICORECOMM=UC6226) */
+    {
+        char prod_resp[128] = {0};
+        if (at_send_cmd("AT+CGNSSPROD\r\n", "PRODUCT:", prod_resp, sizeof(prod_resp), 5000) == ESP_OK) {
+            ESP_LOGI(TAG, "[GNSS] Chip GNSS detectado: %s", prod_resp);
+        } else {
+            ESP_LOGW(TAG, "[GNSS] AT+CGNSSPROD falhou (GNSS pode estar desligado ou nao suportado).");
+        }
+    }
+
     /* Verifica status GNSS via comando de leitura (diagnostico) */
     simcom_driver_query_gnss_status();
 

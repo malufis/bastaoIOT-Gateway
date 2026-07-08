@@ -1090,8 +1090,8 @@ esp_err_t simcom_driver_get_gps(simcom_gps_data_t *gps_out) {
     char gps_resp[AT_RESPONSE_BUF_SIZE];
     esp_err_t err;
 
-    // Tenta CGPSINFO primeiro (NMEA DDMM.MMMM, resposta rapida ~200ms com fix)
-    err = at_send_cmd("AT+CGPSINFO\r\n", "+CGPSINFO:", gps_resp, sizeof(gps_resp), 3000);
+    // Tenta CGPSINFO primeiro (NMEA DDMM.MMMM, timeout 15s para aguardar mutex)
+    err = at_send_cmd("AT+CGPSINFO\r\n", "+CGPSINFO:", gps_resp, sizeof(gps_resp), 15000);
     if (err == ESP_OK) {
         char *data = strstr(gps_resp, "+CGPSINFO:");
         if (data != NULL) {

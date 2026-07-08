@@ -666,28 +666,22 @@ static void system_orchestrator_task(void *pvParameters) {
 static void gps_reader_task(void *pvParameters) {
   uint32_t notification_value = 0;
   while (1) {
-    // Aguarda notificacao do orchestrator (com timeout de 5s para nao travar)
+    // Aguarda notificacao do orchestrator (com timeout de 5s)
     if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
-      // Bloqueia ate obter o mutex do modem (timeout 10s)
-      // Diferente do retry polling, isso bloqueia a task ATE o mutex ser liberado
-      if (simcom_driver_lock_gps_mutex(10000) == ESP_OK) {
-        simcom_gps_data_t gps_new;
-        if (simcom_driver_get_gps(&gps_new) == ESP_OK && gps_new.valid) {
-          bastao_current_status.gps_latitude = gps_new.latitude;
-          bastao_current_status.gps_longitude = gps_new.longitude;
-          if (!bastao_current_status.gps_fix) {
-            bastao_current_status.gps_fix = true;
-            ESP_LOGI(TAG, "GPS FIX OBTIDO! Mudando para polling de 30s.");
-          }
-          gps_data = gps_new;
-          ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
-                   gps_data.latitude, gps_data.longitude);
+      // Chama get_gps diretamente — ela ja gerencia o mutex internamente
+      // com timeout longo (15s para AT+CGPSINFO). Nao precisa lock separado.
+      simcom_gps_data_t gps_new;
+      if (simcom_driver_get_gps(&gps_new) == ESP_OK && gps_new.valid) {
+        bastao_current_status.gps_latitude = gps_new.latitude;
+        bastao_current_status.gps_longitude = gps_new.longitude;
+        if (!bastao_current_status.gps_fix) {
+          bastao_current_status.gps_fix = true;
+          ESP_LOGI(TAG, "GPS FIX OBTIDO! Mudando para polling de 30s.");
         }
-        simcom_driver_unlock_gps_mutex();
-      } else {
-        ESP_LOGW(TAG, "GPS: timeout aguardando mutex do modem (10s). Pulando ciclo.");
+        gps_data = gps_new;
+        ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
+                 gps_data.latitude, gps_data.longitude);
       }
-      // Sinaliza que a leitura terminou (para o orchestrator continuar)
       gps_read_done = true;
     }
   }

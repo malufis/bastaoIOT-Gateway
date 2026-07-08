@@ -722,6 +722,14 @@ esp_err_t simcom_driver_configure_apn(const simcom_apn_config_t *apn_config) {
         at_send_cmd(auth_cmd, "OK", NULL, 0, 5000);
     }
 
+    // Ativa PDP Context (essencial para AGPS, MQTT, etc.)
+    err = at_send_cmd("AT+CGACT=1,1\r\n", "OK", NULL, 0, 15000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Falha ao ativar PDP context 1 (CGACT). AGPS pode falhar.");
+    } else {
+        ESP_LOGI(TAG, "PDP Context 1 ativado com sucesso.");
+    }
+
     modem_state = SIMCOM_STATE_REGISTERED;
     ESP_LOGI(TAG, "APN '%s' configurada e registrada com sucesso.", apn_config->apn);
 
@@ -1141,17 +1149,83 @@ esp_err_t simcom_driver_gps_power_off(void) {
     return err;
 }
 
-/* Query GNSS power status via AT+CGNSSPWR? (read command) */
+/* --- Query GNSS status via AT+CGNSSPWR? --- */
 static esp_err_t simcom_driver_query_gnss_status(void) {
     char resp[128] = {0};
     esp_err_t err = at_send_cmd("AT+CGNSSPWR?\r\n", "+CGNSSPWR:", resp, sizeof(resp), 5000);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "[GPS] Status GNSS: %s", resp);
-        /* Formato: +CGNSSPWR: <power_status>,<ap_flash>,<dynamic_load>,<loader_extend> */
     } else {
         ESP_LOGW(TAG, "[GPS] Falha ao consultar status GNSS (err=%d).", err);
     }
     return err;
+}
+
+/* Verifica se PDP Context esta ativo e retorna o IP */
+static esp_err_t simcom_driver_check_pdp_context(void) {
+    char resp[256] = {0};
+
+    // Verifica se PDP context 1 esta ativo via AT+CGACT?
+    esp_err_t err = at_send_cmd("AT+CGACT?\r\n", "+CGACT:", resp, sizeof(resp), 5000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[AGPS] Falha ao consultar CGACT. PDP context pode nao estar ativo.");
+        return err;
+    }
+
+    // Resposta esperada: +CGACT: 1,1 (PDP context 1 ativo)
+    if (strstr(resp, "1,1") == NULL && strstr(resp, "1,0") != NULL) {
+        ESP_LOGW(TAG, "[AGPS] PDP Context 1 NAO esta ativo (resposta: %s). Tentando ativar...", resp);
+        err = at_send_cmd("AT+CGACT=1,1\r\n", "OK", NULL, 0, 15000);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "[AGPS] Falha ao ativar PDP Context. AGPS nao funcionara.");
+            return err;
+        }
+        ESP_LOGI(TAG, "[AGPS] PDP Context ativado com sucesso.");
+    } else {
+        ESP_LOGI(TAG, "[AGPS] PDP Context 1 ativo.");
+    }
+
+    // Verifica se temos endereco IP via AT+CGPADDR=1
+    err = at_send_cmd("AT+CGPADDR=1\r\n", "+CGPADDR:", resp, sizeof(resp), 5000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[AGPS] Falha ao consultar endereco IP (CGPADDR). Modem pode nao ter IP.");
+        return err;
+    }
+
+    // Resposta esperada: +CGPADDR: 1,"10.x.x.x" ou "100.x.x.x"
+    if (strstr(resp, "\"10.") != NULL || strstr(resp, "\"100.") != NULL || strstr(resp, "\"172.") != NULL) {
+        ESP_LOGI(TAG, "[AGPS] Modem possui endereco IP: %s", resp);
+        return ESP_OK;
+    }
+
+    // Pode ser IP publico tambem (menos comum em 4G)
+    if (strstr(resp, "\"") != NULL) {
+        ESP_LOGI(TAG, "[AGPS] Modem possui endereco IP: %s", resp);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "[AGPS] Modem NAO possui endereco IP (resposta: %s).", resp);
+    return ESP_FAIL;
+}
+
+/* Verifica se firmware suporta XTRA (AT+CGPSXD) como alternativa ao AT+CAGPS */
+static bool simcom_driver_check_xtra_support(void) {
+    char resp[128] = {0};
+    esp_err_t err = at_send_cmd("AT+CGPSXD=?\r\n", "OK", resp, sizeof(resp), 3000);
+    if (err == ESP_OK && strstr(resp, "CGPSXD") != NULL) {
+        ESP_LOGI(TAG, "[AGPS] Firmware suporta XTRA (CGPSXD). Alternativa via AT+CAGPS.");
+        return true;
+    }
+    // Tambem tenta sem parametro
+    err = at_send_cmd("AT+CGPSXD\r\n", "OK", resp, sizeof(resp), 3000);
+    if (err == ESP_OK) {
+        if (strstr(resp, "0") != NULL || strstr(resp, "1") != NULL) {
+            ESP_LOGI(TAG, "[AGPS] Comando CGPSXD reconhecido. Suporte XTRA disponivel.");
+            return true;
+        }
+    }
+    ESP_LOGI(TAG, "[AGPS] Firmware NAO suporta XTRA (CGPSXD). Usando apenas AT+CAGPS.");
+    return false;
 }
 
 esp_err_t simcom_driver_configure_gnss(void) {
@@ -1203,9 +1277,13 @@ esp_err_t simcom_driver_download_agps(void) {
     /* Verifica status GNSS via comando de leitura (diagnostico) */
     simcom_driver_query_gnss_status();
 
-    /* Verifica se data context 4G esta ativo antes de tentar download */
-    ESP_LOGI(TAG, "[AGPS] Verificando conectividade 4G antes do download...");
-    /* TODO: Verificar PDP context ativo via AT+CGACT? */
+    /* Verifica conectividade 4G antes do download AGPS */
+    ESP_LOGI(TAG, "[AGPS] Verificando PDP Context e endereco IP...");
+    if (simcom_driver_check_pdp_context() != ESP_OK) {
+        ESP_LOGE(TAG, "[AGPS] SEM CONECTIVIDADE 4G! PDP Context inativo ou sem IP. AGPS nao funcionara.");
+        ESP_LOGI(TAG, "[AGPS] GPS usara cold start puro. Tentando novamente quando 4G estiver ativo.");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /* Baixa dados de assistencia do servidor AGNSS via 4G */
     ESP_LOGI(TAG, "[AGPS] Baixando dados de assistencia GNSS (AT+CAGPS)...");
@@ -1232,7 +1310,14 @@ esp_err_t simcom_driver_download_agps(void) {
             } else {
                 ESP_LOGW(TAG, "[AGPS] Falha no download AGNSS (erro=%d). GPS usara cold start puro.",
                          agps_error_code);
-                ESP_LOGW(TAG, "[AGPS] Verificar: 1) Data context 4G ativo? 2) Servidor AGNSS acessivel?");
+                ESP_LOGW(TAG, "[AGPS] NOTA: Erro 106 = timeout/servidor inacessivel. Verificar conectividade 4G.");
+                /* Se erro 106, verifica se firmware usa XTRA como alternativa */
+                if (agps_error_code == 106) {
+                    ESP_LOGI(TAG, "[AGPS] Testando suporte a XTRA (AT+CGPSXD) como alternativa...");
+                    if (simcom_driver_check_xtra_support()) {
+                        ESP_LOGI(TAG, "[AGPS] Firmware suporta XTRA. Caso AGPS continue falhando, considerar usar AT+CGPSXD.");
+                    }
+                }
             }
         } else {
             ESP_LOGW(TAG, "[AGPS] Timeout aguardando URC +AGPS (15s). GPS usara cold start puro.");

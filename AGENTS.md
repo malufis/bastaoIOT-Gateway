@@ -1927,6 +1927,61 @@ MQTT connect → watchdog detecta conexao
 ### Arquivos Modificados
 - `esp32_firmware/main/simcom_driver.c`: Parsing IP corrigido (com/sem aspas), `agps_last_attempt` movido para após verificações
 
+---
+
+## Sessão 55 — Fallback AGPS: Injeção de Posição via Torre 4G + Timestamp
+**Data:** 2026-07-08
+**Objetivo:** Quando `AT+CAGPS` falha (erro 106 — servidor AGNSS inacessível), injetar posição da torre 4G + timestamp para acelerar fix GPS.
+
+### Descoberta: Documentação V2.04 (nova!)
+
+A documentação mais recente (V2.04) revela que `AT+CAGPS` aceita **parâmetros** que a V1.09 não documentava:
+
+| Parâmetro | Valores | Descrição |
+|-----------|---------|-----------|
+| `<AidPosSwitch>` | 0, 1, **2** | 0=não injetar, 1=usar LBS, **2=usuário informa** |
+| `<AidPosString>` | "lat,lon" | Posição a injetar (só usado se AidPosSwitch=2) |
+| `<AidTimeSwitch>` | 0, 1, **2** | 0=não injetar, 1=system time, **2=usuário informa** |
+| `<AidTimeString>` | timestamp | Timestamp UTC (só usado se AidTimeSwitch=2) |
+
+Exemplo de sucesso:
+```
+AT+CAGPS=2,"34.56,116.45",2,"1721985946"
+OK
++AGPS:success.
+```
+
+### Solução Implementada
+
+Quando `AT+CAGPS` (sem parâmetros) falha com erro 106:
+
+```
+1. AT+CAGPS → OK → +AGPS:106 (servidor AGNSS inacessivel)
+2. Verifica se cell_tower_location_valid == true
+3. Verifica se time(NULL) > 1700000000 (timestamp valido)
+4. Se ambos OK → AT+CAGPS=2,"{lat},{lon}",2,"{timestamp}"
+5. Se sucesso → AT+CGPSCOLD (cold start com dados assistidos)
+```
+
+Isso permite que o GPS use a posição da torre 4G (~500m de precisão) como referência para acelerar a aquisição de satélites.
+
+### Erros Documentados (V2.04)
+
+| Erro | Descrição |
+|:----:|:----------|
+| 101 | Falha ao abrir socket |
+| 102 | Falha ao obter servidor AGNSS |
+| 103 | Falha ao conectar no servidor |
+| 104 | Falha ao escrever no socket |
+| 105 | Falha ao ler dados do socket |
+| **106** | **Falha ao obter dados AGNSS** |
+| **107** | **Falha ao enviar dados AGNSS** (novo!) |
+
+### Arquivos Modificados
+- `esp32_firmware/main/simcom_driver.c`: Fallback com `AT+CAGPS=2,"lat,lon",2,"timestamp"`
+
+---
+
 ## Referência Rápida de Comandos
 
 ```powershell

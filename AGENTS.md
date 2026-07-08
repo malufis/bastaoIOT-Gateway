@@ -1776,12 +1776,65 @@ simcom_driver_download_agps():
 | `AT+CGACT?` (verifica) | ❌ | ✅ |
 | `AT+CGPADDR=1` (IP) | ❌ | ✅ |
 | `AT+CGPSXD=?` (XTRA) | ❌ | ✅ (fallback) |
-| `AT+CCLK?` (relógio) | ❌ | ❌ (futuro) |
+| `AT+CCLK?` (relógio) | ❌ | ✅ |
+| `AT+CDNSGIP` (DNS) | ❌ | ✅ |
 
 ### Arquivos Modificados
 - `esp32_firmware/main/simcom_driver.c`: configure_apn() com CGACT, 3 novas funcoes (check_pdp_context, check_xtra_support, query_gnss_status), download_agps() com verificacoes
 
 ---
+
+## Sessão 52 — Verificação de Relógio + DNS Pré-AGPS
+**Data:** 2026-07-08
+**Objetivo:** Adicionar verificacoes de relogio (AT+CCLK?) e DNS (AT+CDNSGIP) antes do AT+CAGPS para prevenir erro 106.
+
+### Problemas Corrigidos
+
+**Bug1 — Relógio não sincronizado rejeitado pelo servidor AGNSS:**
+- Servidor AGNSS pode rejeitar dados se o timestamp do modem estiver muito incorreto (ex: 00/01/01).
+- Agora `simcom_driver_check_clock()` consulta `AT+CCLK?` e se ano < 2023, tenta sincronizar via `simcom_driver_sync_time_from_tower()`, que já estava implementada mas nunca era chamada antes do AGPS.
+
+**Bug2 — Falha de DNS impedindo acesso ao servidor AGNSS:**
+- Servidor AGNSS pode ser acessado por nome DNS. Sem resolução DNS, o download falha.
+- Nova função `simcom_driver_check_dns()` resolve `google.com` via `AT+CDNSGIP` e verifica se retornou IP válido. Não bloqueia o AGPS (apenas loga warning).
+
+### Fluxo AGPS Completo Agora:
+```
+simcom_driver_download_agps():
+  → power_on GNSS
+  → configure_gnss (CGNSSMODE=7)
+  → query_gnss_status (AT+CGNSSPWR?)
+  → CHECK_PDP_CONTEXT():
+      → AT+CGACT? (PDP ativo?)
+      → AT+CGPADDR=1 (tem IP?)
+      → Se sem IP → return ESP_FAIL
+  → CHECK_CLOCK():                ← NOVO!
+      → AT+CCLK? (relogio OK?)
+      → Se ano < 2023 → sync_time_from_tower()
+  → CHECK_DNS():                  ← NOVO!
+      → AT+CDNSGIP="google.com"
+      → Se falhar → log warning (nao bloqueia)
+  → AT+CAGPS (timeout 12s)
+  → Aguarda URC +AGPS (timeout 15s)
+  → Se erro 106 → check_xtra_support()
+```
+
+### Diagnóstico vs Nosso Código (final)
+
+| Etapa | Status |
+|:------|:------:|
+| `AT+CGATT=1` (GPRS attach) | ✅ |
+| `AT+CGDCONT` (config APN) | ✅ |
+| `AT+CGACT=1,1` (ativa PDP) | ✅ |
+| `AT+CGACT?` (PDP ativo?) | ✅ |
+| `AT+CGPADDR=1` (tem IP?) | ✅ |
+| `AT+CCLK?` (relógio) | ✅ |
+| `AT+CDNSGIP` (DNS) | ✅ |
+| `AT+CGPSXD=?` (XTRA fallback) | ✅ |
+| `AT+NETOPEN?` | ❌ (não necessário com CGDCONT) |
+
+### Arquivos Modificados
+- `esp32_firmware/main/simcom_driver.c`: check_clock(), check_dns(), download_agps() integrado
 
 ## Referência Rápida de Comandos
 

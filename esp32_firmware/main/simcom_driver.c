@@ -1228,6 +1228,61 @@ static bool simcom_driver_check_xtra_support(void) {
     return false;
 }
 
+/* Verifica resolucao DNS via AT+CDNSGIP (essencial para AGPS) */
+static esp_err_t simcom_driver_check_dns(void) {
+    char resp[256] = {0};
+    ESP_LOGI(TAG, "[AGPS] Testando resolucao DNS (AT+CDNSGIP)...");
+    esp_err_t err = at_send_cmd("AT+CDNSGIP=\"google.com\"\r\n", "+CDNSGIP:", resp, sizeof(resp), 10000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[AGPS] Falha na resolucao DNS (err=%d). AGPS pode falhar se servidor AGNSS for por nome.", err);
+        return err;
+    }
+
+    // Resposta esperada: +CDNSGIP: 1,"google.com","142.250.xx.xx"
+    if (strstr(resp, "\"google.com\"") != NULL) {
+        ESP_LOGI(TAG, "[AGPS] DNS funcionando: %s", resp);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "[AGPS] DNS retornou resposta inesperada: %s", resp);
+    return ESP_FAIL;
+}
+
+/* Verifica se relogio interno esta sincronizado (AT+CCLK?) */
+static esp_err_t simcom_driver_check_clock(void) {
+    char resp[AT_RESPONSE_BUF_SIZE] = {0};
+    esp_err_t err = at_send_cmd("AT+CCLK?\r\n", "+CCLK:", resp, sizeof(resp), 5000);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[AGPS] Falha ao ler relogio (AT+CCLK?). Servidor AGNSS pode rejeitar dados.");
+        return err;
+    }
+
+    // Extrai ano da resposta: +CCLK: "yy/MM/dd,hh:mm:ss±zz"
+    char *p = strstr(resp, "+CCLK:");
+    if (p == NULL) return ESP_ERR_NOT_FOUND;
+    p += 6;
+    while (*p == ' ' || *p == '"') p++;
+
+    int yy = 0;
+    sscanf(p, "%d", &yy);
+
+    // Ano < 23 (2023) = relogio nao sincronizado
+    if (yy < 23) {
+        ESP_LOGW(TAG, "[AGPS] Relogio nao sincronizado (ano=20%02d). Tentando sincronizar via torre...", yy);
+        err = simcom_driver_sync_time_from_tower();
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "[AGPS] Relogio sincronizado com sucesso via torre celular.");
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "[AGPS] Falha ao sincronizar relogio. Servidor AGNSS pode rejeitar dados (timeout/106).");
+        // Continua mesmo assim — pode funcionar com fuso errado
+        return ESP_OK;  // nao bloqueia, apenas avisa
+    }
+
+    ESP_LOGI(TAG, "[AGPS] Relogio sincronizado (ano=20%02d).", yy);
+    return ESP_OK;
+}
+
 esp_err_t simcom_driver_configure_gnss(void) {
     if (!gps_powered_on) {
         ESP_LOGW(TAG, "[GNSS] Nao configurado: GNSS desligado.");
@@ -1284,6 +1339,14 @@ esp_err_t simcom_driver_download_agps(void) {
         ESP_LOGI(TAG, "[AGPS] GPS usara cold start puro. Tentando novamente quando 4G estiver ativo.");
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* Verifica sincronizacao do relogio (AT+CCLK?) — AGNSS pode rejeitar sem hora certa */
+    ESP_LOGI(TAG, "[AGPS] Verificando relogio interno...");
+    simcom_driver_check_clock();
+
+    /* Testa resolucao DNS (AT+CDNSGIP) — servidor AGNSS pode ser acessado por nome DNS */
+    ESP_LOGI(TAG, "[AGPS] Testando resolucao DNS...");
+    simcom_driver_check_dns();
 
     /* Baixa dados de assistencia do servidor AGNSS via 4G */
     ESP_LOGI(TAG, "[AGPS] Baixando dados de assistencia GNSS (AT+CAGPS)...");

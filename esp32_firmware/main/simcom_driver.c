@@ -270,7 +270,18 @@ static void process_simcom_line(const char *line) {
         agps_success = false;
         agps_error_code = atoi(line + 6);
         if (agps_sem != NULL) xSemaphoreGive(agps_sem);
-        ESP_LOGW(TAG, "URC AGPS: Falha no download (erro=%d).", agps_error_code);
+        /* Decodifica erro para log detalhado */
+        const char *err_desc = "desconhecido";
+        switch (agps_error_code) {
+            case 101: err_desc = "falha ao abrir socket"; break;
+            case 102: err_desc = "falha ao obter servidor AGNSS"; break;
+            case 103: err_desc = "falha ao conectar no servidor AGNSS"; break;
+            case 104: err_desc = "falha ao escrever no socket"; break;
+            case 105: err_desc = "falha ao ler dados AGPS do socket"; break;
+            case 106: err_desc = "timeout ou servidor inacessivel"; break;
+            default: break;
+        }
+        ESP_LOGW(TAG, "URC AGPS: Falha no download (erro=%d: %s).", agps_error_code, err_desc);
     }
     else if (strncmp(line, "+CMQTTCONNLOST:", 15) == 0) {
         ESP_LOGW(TAG, "URC MQTT: Conexao perdida com o broker.");
@@ -1130,6 +1141,19 @@ esp_err_t simcom_driver_gps_power_off(void) {
     return err;
 }
 
+/* Query GNSS power status via AT+CGNSSPWR? (read command) */
+static esp_err_t simcom_driver_query_gnss_status(void) {
+    char resp[128] = {0};
+    esp_err_t err = at_send_cmd("AT+CGNSSPWR?\r\n", "+CGNSSPWR:", resp, sizeof(resp), 5000);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "[GPS] Status GNSS: %s", resp);
+        /* Formato: +CGNSSPWR: <power_status>,<ap_flash>,<dynamic_load>,<loader_extend> */
+    } else {
+        ESP_LOGW(TAG, "[GPS] Falha ao consultar status GNSS (err=%d).", err);
+    }
+    return err;
+}
+
 esp_err_t simcom_driver_configure_gnss(void) {
     if (!gps_powered_on) {
         ESP_LOGW(TAG, "[GNSS] Nao configurado: GNSS desligado.");
@@ -1158,22 +1182,34 @@ esp_err_t simcom_driver_download_agps(void) {
     }
 
     /* Aguarda chip GNSS pronto (URC +CGNSSPWR:READY!) — timeout 15s */
+    /* NOTA: ASR1601 (nosso modem) NAO emite +CGNSSPWR:READY! — apenas ASR1603/1803 */
+    /* Se gnss_ready nao ficar true, continuamos mesmo assim (timeout 5s e segue) */
     if (!gnss_ready) {
-        ESP_LOGI(TAG, "[AGPS] Aguardando chip GNSS ficar pronto (+CGNSSPWR:READY!)...");
+        ESP_LOGI(TAG, "[AGPS] Aguardando chip GNSS ficar pronto...");
         uint32_t start = xTaskGetTickCount();
-        while (!gnss_ready && (xTaskGetTickCount() - start) < pdMS_TO_TICKS(15000)) {
+        while (!gnss_ready && (xTaskGetTickCount() - start) < pdMS_TO_TICKS(5000)) {
             vTaskDelay(pdMS_TO_TICKS(500));
         }
         if (!gnss_ready) {
-            ESP_LOGW(TAG, "[AGPS] Timeout aguardando READY! do GNSS (15s). Continuando...");
+            ESP_LOGW(TAG, "[AGPS] URC +CGNSSPWR:READY! nao recebido (normal em ASR1601). Continuando...");
+        } else {
+            ESP_LOGI(TAG, "[AGPS] Chip GNSS pronto (+CGNSSPWR:READY!).");
         }
     }
 
     /* Configura constelacoes (GPS+BDS+GLONASS para mais satelites) */
     simcom_driver_configure_gnss();
 
+    /* Verifica status GNSS via comando de leitura (diagnostico) */
+    simcom_driver_query_gnss_status();
+
+    /* Verifica se data context 4G esta ativo antes de tentar download */
+    ESP_LOGI(TAG, "[AGPS] Verificando conectividade 4G antes do download...");
+    /* TODO: Verificar PDP context ativo via AT+CGACT? */
+
     /* Baixa dados de assistencia do servidor AGNSS via 4G */
     ESP_LOGI(TAG, "[AGPS] Baixando dados de assistencia GNSS (AT+CAGPS)...");
+    ESP_LOGI(TAG, "[AGPS] NOTA: Comando pode levar ate 9s (Max ResponseTime da documentacao).");
 
     /* Prepara para receber URC +AGPS:success./+AGPS:<err> */
     agps_success = false;
@@ -1181,11 +1217,13 @@ esp_err_t simcom_driver_download_agps(void) {
     xSemaphoreTake(agps_sem, 0);  /* drena semaforo pendente */
 
     /* AT+CAGPS retorna OK imediatamente, +AGPS:success. chega como URC depois */
-    esp_err_t err = at_send_cmd("AT+CAGPS\r\n", "OK", NULL, 0, 3000);
+    /* Documentacao SIMCom: Max ResponseTime = 9000ms. Usamos 12s com margem. */
+    esp_err_t err = at_send_cmd("AT+CAGPS\r\n", "OK", NULL, 0, 12000);
 
     if (err == ESP_OK) {
-        /* Aguarda URC +AGPS:success./+AGPS:<err> — timeout 10s */
-        if (xSemaphoreTake(agps_sem, pdMS_TO_TICKS(10000)) == pdTRUE) {
+        ESP_LOGI(TAG, "[AGPS] Comando AT+CAGPS aceito. Aguardando resultado (timeout 15s)...");
+        /* Aguarda URC +AGPS:success./+AGPS:<err> — timeout 15s */
+        if (xSemaphoreTake(agps_sem, pdMS_TO_TICKS(15000)) == pdTRUE) {
             if (agps_success) {
                 agps_downloaded = true;
                 ESP_LOGI(TAG, "[AGPS] Dados AGNSS baixados com SUCESSO. GPS deve obter fix muito mais rapido.");
@@ -1194,9 +1232,11 @@ esp_err_t simcom_driver_download_agps(void) {
             } else {
                 ESP_LOGW(TAG, "[AGPS] Falha no download AGNSS (erro=%d). GPS usara cold start puro.",
                          agps_error_code);
+                ESP_LOGW(TAG, "[AGPS] Verificar: 1) Data context 4G ativo? 2) Servidor AGNSS acessivel?");
             }
         } else {
-            ESP_LOGW(TAG, "[AGPS] Timeout aguardando URC +AGPS (10s). GPS usara cold start puro.");
+            ESP_LOGW(TAG, "[AGPS] Timeout aguardando URC +AGPS (15s). GPS usara cold start puro.");
+            ESP_LOGW(TAG, "[AGPS] Possivel causa: servidor AGNSS lento ou inacessivel.");
         }
     } else {
         ESP_LOGW(TAG, "[AGPS] Comando AT+CAGPS falhou (err=%d). GPS usara cold start puro.", err);

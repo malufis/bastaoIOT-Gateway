@@ -1618,6 +1618,105 @@ download_agps() detecta sucesso → AT+CGPSCOLD (reinicia GPS com dados)
 
 ---
 
+## Sessão 50 — Correção AGPS: ASR1601 não emite +CGNSSPWR:READY!, timeout, erro 106
+**Data:** 2026-07-08
+**Objetivo:** Corrigir A-GPS que nunca funcionava por 3 bugs: URC inexistente, timeout insuficiente e erro não tratado.
+
+### Problemas Identificados nos Logs
+
+**Bug1 — `+CGNSSPWR:READY!` nunca chega (timeout15s):**
+```
+W (47941) SIMCOM_DRV: [AGPS] Timeout aguardando READY! do GNSS (15s).
+```
+A documentação SIMCom (p.478) diz: *"In ASR1601, this command can only control the GNSS module by pulling up/down the power pin."*
+O chip **ASR1601** (nosso modem A7670C-BASS_DTU) **NÃO emite o URC `+CGNSSPWR:READY!`**. Esse URC só existe no ASR1603/ASR1803.
+
+**Bug2 — Timeout AT+CAGPS de 3s (documentação diz 9s):**
+```
+D (47999) SIMCOM_DRV: AT TX >> AT+CAGPS
+D (48012) SIMCOM_DRV: at_send_cmd_internal: ret=0 cmd=AT+CAGPS
+```
+O modem aceitou o comando (OK), mas o timeout de3000ms é menor que o Max ResponseTime de 9000ms da documentação.
+
+**Bug3 — Erro 106 (não documentado):**
+```
+W (52715) SIMCOM_DRV: URC AGPS: Falha no download (erro=106).
+```
+A documentação lista apenas erros 101-105. Erro 106 é provavelmente "timeout/servidor inacessível" em firmware mais recente.
+
+### Descobertas da Documentação (A76XX AT Command Manual V1.09)
+
+| Comando | Chip | URC READY!? | Suporte AP_Flash? |
+|---------|------|:-----------:|:-----------------:|
+| `AT+CGNSSPWR=1` | ASR1601 | ❌ Não | ❌ Não |
+| `AT+CGNSSPWR=1` | ASR1603/1803 | ✅ Sim | ✅ Sim |
+| `AT+CAGPS` | Todos | N/A | N/A |
+
+- `AT+CGNSSPWR?` (read command): retorna status do GNSS (`<power_status>,<ap_flash>,<dynamic_load>,<loader_extend>`)
+- `AT+CGNSSPWR=1` no ASR1601: apenas liga/desliga o módulo GNSS via GPIO, sem URC
+
+### Correções Aplicadas
+
+**1. Timeout AT+CAGPS: 3s → 12s (com margem para9s documentado):**
+```c
+// ANTES:
+esp_err_t err = at_send_cmd("AT+CAGPS\r\n", "OK", NULL, 0, 3000);
+// DEPOIS:
+esp_err_t err = at_send_cmd("AT+CAGPS\r\n", "OK", NULL, 0, 12000);
+```
+
+**2. Timeout URC AGPS: 10s → 15s:**
+```c
+// ANTES:
+if (xSemaphoreTake(agps_sem, pdMS_TO_TICKS(10000)) == pdTRUE) {
+// DEPOIS:
+if (xSemaphoreTake(agps_sem, pdMS_TO_TICKS(15000)) == pdTRUE) {
+```
+
+**3. GNSS Ready timeout:15s → 5s (URC não existe no ASR1601):**
+```c
+// ANTES: aguarda 15s por URC que nunca vem
+while (!gnss_ready && ... < pdMS_TO_TICKS(15000)) {
+// DEPOIS: aguarda 5s e continua (normal em ASR1601)
+while (!gnss_ready && ... < pdMS_TO_TICKS(5000)) {
+```
+
+**4. Tratamento erro 106 (não documentado):**
+```c
+case 106: err_desc = "timeout ou servidor inacessivel"; break;
+```
+
+**5. Query de status GNSS (diagnóstico):**
+```c
+static esp_err_t simcom_driver_query_gnss_status(void) {
+    // Envia AT+CGNSSPWR? para verificar se GNSS está ligado
+}
+```
+
+**6. Logging detalhado para diagnóstico:**
+- Log do status GNSS via `AT+CGNSSPWR?`
+- Log de cada etapa do download AGPS
+- Log de possíveis causas de falha
+
+### Fluxo Corrigido
+```
+Boot → gps_power_on() → AT+CGNSSPWR=1 (OK, sem URC READY!)
+  → gnss_ready = false (normal em ASR1601)
+  → aguarda 5s e continua
+  → configure_gnss() → AT+CGNSSMODE=7 (OK)
+  → query_gnss_status() → AT+CGNSSPWR? (diagnóstico)
+  → download_agps():
+      1. AT+CAGPS (timeout 12s) → OK
+      2. Aguarda URC +AGPS:success./+AGPS:<err> (timeout 15s)
+      3. Se sucesso → AT+CGPSCOLD (cold start com dados)
+      4. Se erro 106 → log "timeout ou servidor inacessível"
+```
+
+### Arquivos Modificados
+- `esp32_firmware/main/simcom_driver.c`: Timeout AT+CAGPS 3s→12s, timeout URC 10s→15s, GNSS ready 15s→5s, erro 106, query_gnss_status(), logging detalhado
+
+---
+
 ## Referência Rápida de Comandos
 
 ```powershell

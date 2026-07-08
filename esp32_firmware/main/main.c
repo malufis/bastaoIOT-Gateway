@@ -646,7 +646,10 @@ static void system_orchestrator_task(void *pvParameters) {
       cell_loc_tick++;
       if (cell_loc_tick >= 300) {
         cell_loc_tick = 0;
-        if (!bastao_current_status.gps_fix && !simcom_driver_is_busy()) {
+        if (!bastao_current_status.gps_fix) {
+          // cell_tower_get_location() usa AT+HTTPINIT do modem (nao precisa Wi-Fi)
+          // Ela bloqueia o mutex internamente via at_send_cmd, com timeout longo
+          ESP_LOGD(TAG, "[CELL] Atualizando cache de localizacao por torre...");
           simcom_driver_update_cell_tower_cache();
         }
       }

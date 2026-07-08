@@ -71,6 +71,12 @@ static SemaphoreHandle_t agps_sem = NULL;
 static bool agps_success = false;
 static int agps_error_code = 0;
 
+/** @brief Semaforo para sinalizar resultado do HTTPACTION (URC +HTTPACTION:) */
+static SemaphoreHandle_t http_action_sem = NULL;
+static int http_status_code = 0;
+static int http_data_len = 0;
+static bool http_action_done = false;
+
 /** @brief APN configurada no sistema. */
 static simcom_apn_config_t stored_apn = {0};
 
@@ -285,6 +291,17 @@ static void process_simcom_line(const char *line) {
             default: break;
         }
         ESP_LOGW(TAG, "URC AGPS: Falha no download (erro=%d: %s).", agps_error_code, err_desc);
+    }
+    else if (strncmp(line, "+HTTPACTION:", 12) == 0) {
+        /* URC de resposta HTTP: +HTTPACTION: <method>,<statuscode>,<datalen> */
+        int method = 0, status = 0, len = 0;
+        if (sscanf(line, "+HTTPACTION: %d,%d,%d", &method, &status, &len) >= 3) {
+            http_status_code = status;
+            http_data_len = len;
+            http_action_done = true;
+            if (http_action_sem != NULL) xSemaphoreGive(http_action_sem);
+            ESP_LOGD(TAG, "URC HTTPACTION: method=%d status=%d datalen=%d", method, status, len);
+        }
     }
     else if (strncmp(line, "+CMQTTCONNLOST:", 15) == 0) {
         ESP_LOGW(TAG, "URC MQTT: Conexao perdida com o broker.");
@@ -650,6 +667,9 @@ esp_err_t simcom_driver_init(void) {
     }
     if (agps_sem == NULL) {
         agps_sem = xSemaphoreCreateBinary();
+    }
+    if (http_action_sem == NULL) {
+        http_action_sem = xSemaphoreCreateBinary();
     }
 
     if (!uart_is_driver_installed(SIMCOM_UART_PORT)) {
@@ -1556,10 +1576,10 @@ static esp_err_t query_cpsi_metrics(void) {
 }
 
 /**
- * @brief Obtem localizacao approximada via torre celular (Mozilla Location Service).
+ * @brief Obtem localizacao approximada via torre celular usando HTTP do proprio modem 4G.
  *
- * Usa MCC, MNC, TAC, CID e EARFCN para consultar a API do Mozilla.
- * Requer conexao ativa (Wi-Fi ou celular com dados).
+ * Usa AT+HTTPINIT/HTTPPARA/HTTPDATA/HTTPACTION/HTTPREAD do SIMCom para consultar
+ * a API do Mozilla Location Service diretamente pela rede 4G, sem depender do Wi-Fi.
  *
  * @param[out] lat Latitude obtida
  * @param[out] lon Longitude obtida
@@ -1570,10 +1590,34 @@ static esp_err_t cell_tower_get_location(double *lat, double *lon) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Monta JSON para Mozilla Location Service */
+    ESP_LOGI(TAG, "[CELL] Consultando localizacao via HTTP 4G (MCC=%d MNC=%d TAC=%d CID=%d)",
+             cached_mcc, cached_mnc, cached_tac, cached_cid);
+
+    // 1. Inicializa servico HTTP
+    if (at_send_cmd("AT+HTTPINIT\r\n", "OK", NULL, 0, 10000) != ESP_OK) {
+        ESP_LOGW(TAG, "[CELL] HTTPINIT falhou");
+        return ESP_FAIL;
+    }
+
+    // 2. Configura URL (Mozilla Location Service)
+    if (at_send_cmd("AT+HTTPPARA=\"URL\",\"https://location.services.mozilla.com/v1/geolocate?key=test\"\r\n",
+                    "OK", NULL, 0, 5000) != ESP_OK) {
+        ESP_LOGW(TAG, "[CELL] HTTPPARA URL falhou");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+        return ESP_FAIL;
+    }
+
+    // 3. Configura Content-Type
+    if (at_send_cmd("AT+HTTPPARA=\"CONTENT\",\"application/json\"\r\n",
+                    "OK", NULL, 0, 5000) != ESP_OK) {
+        ESP_LOGW(TAG, "[CELL] HTTPPARA CONTENT falhou");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+        return ESP_FAIL;
+    }
+
+    // 4. Monta JSON com dados da celula (mesmo formato do Mozilla)
     cJSON *root = cJSON_CreateObject();
     cJSON *cellests = cJSON_AddArrayToObject(root, "cellTowers");
-
     cJSON *cell = cJSON_CreateObject();
     cJSON_AddNumberToObject(cell, "mobileCountryCode", cached_mcc);
     cJSON_AddNumberToObject(cell, "mobileNetworkCode", cached_mnc);
@@ -1583,90 +1627,147 @@ static esp_err_t cell_tower_get_location(double *lat, double *lon) {
     cJSON_AddNumberToObject(cell, "signalStrength", cached_rsrp);
     cJSON_AddNumberToObject(cell, "timingAdvance", 0);
     cJSON_AddItemToArray(cellests, cell);
-
     char *post_data = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
+    if (!post_data) {
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+        return ESP_FAIL;
+    }
 
-    if (!post_data) return ESP_FAIL;
+    size_t data_len = strlen(post_data);
+    ESP_LOGD(TAG, "[CELL] JSON POST (%d bytes): %s", data_len, post_data);
 
-    ESP_LOGI(TAG, "MLS Request: MCC=%d MNC=%d TAC=%d CID=%d EARFCN=%d",
-             cached_mcc, cached_mnc, cached_tac, cached_cid, cached_earfcn);
+    // 5. HTTPDATA: envia tamanho, aguarda prompt DOWNLOAD, envia dados
+    char httpdata_cmd[64];
+    snprintf(httpdata_cmd, sizeof(httpdata_cmd), "AT+HTTPDATA=%d,30000\r\n", (int)data_len);
 
-    /* Buffer para resposta */
-    char response_buf[512];
-    memset(response_buf, 0, sizeof(response_buf));
+    // Envia AT+HTTPDATA manualmente e aguarda prompt DOWNLOAD
+    awaiting_response = true;
+    memset(cmd_response_buf, 0, sizeof(cmd_response_buf));
+    cmd_response_len = 0;
+    xSemaphoreTake(response_sem, 0);
 
-    esp_http_client_config_t http_config = {
-        .url = "https://location.services.mozilla.com/v1/geolocate?key=test",
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = 10000,
-    };
+    uart_write_bytes(SIMCOM_UART_PORT, httpdata_cmd, strlen(httpdata_cmd));
 
-    esp_http_client_handle_t client = esp_http_client_init(&http_config);
-    if (!client) {
+    // Aguarda ate 30s pelo prompt DOWNLOAD
+    uint32_t timeout_start = xTaskGetTickCount();
+    bool got_download = false;
+    while ((xTaskGetTickCount() - timeout_start) < pdMS_TO_TICKS(30000)) {
+        if (strstr(cmd_response_buf, "DOWNLOAD") != NULL) {
+            got_download = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (!got_download) {
+        ESP_LOGW(TAG, "[CELL] HTTPDATA: timeout aguardando DOWNLOAD");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
         free(post_data);
         return ESP_FAIL;
     }
 
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_err_t err = esp_http_client_open(client, strlen(post_data));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "MLS HTTP open falhou: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        free(post_data);
-        return err;
-    }
-
-    int written = esp_http_client_write(client, post_data, strlen(post_data));
+    // Envia os dados JSON
+    uart_write_bytes(SIMCOM_UART_PORT, post_data, data_len);
     free(post_data);
 
-    if (written < 0) {
-        ESP_LOGE(TAG, "MLS HTTP write falhou");
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
+    // Aguarda OK apos envio dos dados
+    xSemaphoreTake(response_sem, 0);
+    if (xSemaphoreTake(response_sem, pdMS_TO_TICKS(30000)) != pdTRUE) {
+        ESP_LOGW(TAG, "[CELL] HTTPDATA: timeout apos envio de dados");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
         return ESP_FAIL;
     }
 
-    int read_len = esp_http_client_read(client, response_buf, sizeof(response_buf) - 1);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    if (read_len <= 0) {
-        ESP_LOGW(TAG, "MLS: Sem resposta HTTP");
+    // Verifica se recebemos OK (nao ERROR)
+    if (strstr(cmd_response_buf, "ERROR") != NULL) {
+        ESP_LOGW(TAG, "[CELL] HTTPDATA: ERROR no envio");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
         return ESP_FAIL;
     }
-    response_buf[read_len] = '\0';
+    awaiting_response = false;
 
-    /* Parse da resposta: {"location":{"lat":-23.55,"lng":-46.63},"accuracy":1500} */
-    cJSON *resp_root = cJSON_Parse(response_buf);
+    // 6. HTTPACTION: POST (method=1), aguarda URC +HTTPACTION:
+    http_action_done = false;
+    http_status_code = 0;
+    http_data_len = 0;
+    xSemaphoreTake(http_action_sem, 0);
+
+    esp_err_t action_err = at_send_cmd("AT+HTTPACTION=1\r\n", "OK", NULL, 0, 5000);
+    if (action_err != ESP_OK) {
+        ESP_LOGW(TAG, "[CELL] HTTPACTION falhou");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+        return ESP_FAIL;
+    }
+
+    // Aguarda URC +HTTPACTION:
+    if (xSemaphoreTake(http_action_sem, pdMS_TO_TICKS(60000)) != pdTRUE) {
+        ESP_LOGW(TAG, "[CELL] HTTPACTION: timeout aguardando resposta (60s)");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+        return ESP_FAIL;
+    }
+
+    if (http_status_code != 200) {
+        ESP_LOGW(TAG, "[CELL] HTTP %d (esperado 200)", http_status_code);
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+        return ESP_FAIL;
+    }
+
+    if (http_data_len <= 0) {
+        ESP_LOGW(TAG, "[CELL] HTTP sem dados na resposta");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+        return ESP_FAIL;
+    }
+
+    // 7. HTTPREAD: le dados da resposta
+    char read_cmd[32];
+    snprintf(read_cmd, sizeof(read_cmd), "AT+HTTPREAD=0,%d\r\n", http_data_len > 512 ? 512 : http_data_len);
+    char read_resp[1024] = {0};
+    esp_err_t read_err = at_send_cmd(read_cmd, "+HTTPREAD:", read_resp, sizeof(read_resp), 30000);
+    if (read_err != ESP_OK) {
+        ESP_LOGW(TAG, "[CELL] HTTPREAD falhou");
+        at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+        return ESP_FAIL;
+    }
+
+    // 8. Termina servico HTTP
+    at_send_cmd("AT+HTTPTERM\r\n", "OK", NULL, 0, 3000);
+
+    // 9. Parse da resposta JSON: {"location":{"lat":-23.55,"lng":-46.63},"accuracy":1500}
+    ESP_LOGD(TAG, "[CELL] Resposta Mozilla: %s", read_resp);
+
+    char *json_start = strstr(read_resp, "{");
+    if (json_start == NULL) {
+        ESP_LOGW(TAG, "[CELL] JSON nao encontrado na resposta");
+        return ESP_FAIL;
+    }
+
+    cJSON *resp_root = cJSON_Parse(json_start);
     if (!resp_root) {
-        ESP_LOGW(TAG, "MLS: JSON parse falhou");
+        ESP_LOGW(TAG, "[CELL] JSON parse falhou");
         return ESP_FAIL;
     }
 
-    cJSON *location = cJSON_GetObjectItem(resp_root, "location");
-    if (!location) {
+    cJSON *loc = cJSON_GetObjectItem(resp_root, "location");
+    if (!loc) {
         cJSON_Delete(resp_root);
-        ESP_LOGW(TAG, "MLS: campo 'location' ausente");
+        ESP_LOGW(TAG, "[CELL] Campo 'location' nao encontrado");
         return ESP_FAIL;
     }
 
-    cJSON *lat_json = cJSON_GetObjectItem(location, "lat");
-    cJSON *lng_json = cJSON_GetObjectItem(location, "lng");
-    if (!lat_json || !lng_json) {
+    cJSON *lat_item = cJSON_GetObjectItem(loc, "lat");
+    cJSON *lng_item = cJSON_GetObjectItem(loc, "lng");
+    if (!lat_item || !lng_item) {
         cJSON_Delete(resp_root);
-        ESP_LOGW(TAG, "MLS: campos lat/lng ausentes");
+        ESP_LOGW(TAG, "[CELL] Campos lat/lng nao encontrados");
         return ESP_FAIL;
     }
 
-    *lat = lat_json->valuedouble;
-    *lon = lng_json->valuedouble;
-
-    cJSON *accuracy = cJSON_GetObjectItem(resp_root, "accuracy");
-    int acc = accuracy ? accuracy->valueint : -1;
-
-    ESP_LOGI(TAG, "MLS: lat=%.6f lon=%.6f accuracy=%dm", *lat, *lon, acc);
+    *lat = lat_item->valuedouble;
+    *lon = lng_item->valuedouble;
     cJSON_Delete(resp_root);
+
+    ESP_LOGI(TAG, "[CELL] Localizacao via 4G: %.6f, %.6f", *lat, *lon);
     return ESP_OK;
 }
 

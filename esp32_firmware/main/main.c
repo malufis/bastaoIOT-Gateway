@@ -454,8 +454,20 @@ void app_main(void) {
       // Atualiza dados SIM com operadora e sinal recem-coletados
       ble_mobile_save_sim_data();
 
-      // Acelera fix GPS: baixa dados de efeméride do servidor AGNSS via 4G
-      // (AT+CAGPS). Com dados AGNSS, fix ocorre em 2-5s em vez de 30s+.
+      // PASSO 1: OBTEM POSICAO DA TORRE 4G VIA HTTP (AT+HTTPINIT)
+      // Antes de tentar AGPS, ja consulta a localizacao aproximada via rede 4G.
+      // Isso permite injetar a posicao no GPS mesmo sem o servidor AGNSS da SIMCom.
+      ESP_LOGI(TAG, "[BOOT] Obtendo localizacao aproximada via torre 4G...");
+      esp_err_t cell_err = simcom_driver_update_cell_tower_cache();
+      if (cell_err == ESP_OK) {
+        ESP_LOGI(TAG, "[BOOT] Localizacao 4G obtida. Usando para acelerar GPS.");
+      } else {
+        ESP_LOGW(TAG, "[BOOT] Localizacao 4G indisponivel no momento. Seguindo sem ela.");
+      }
+
+      // PASSO 2: ACELERA GPS (via AT+CAGPS ou injecao de posicao da torre)
+      // Se o servidor AGNSS estiver acessivel, baixa efemeride (2-5s de fix).
+      // Se nao, usa a posicao da torre 4G + timestamp como fallback.
       ESP_LOGI(TAG, "[GPS] Configurando A-GPS para fix acelerado...");
       if (simcom_driver_download_agps() == ESP_OK) {
         ESP_LOGI(TAG, "[GPS] A-GPS configurado com sucesso.");

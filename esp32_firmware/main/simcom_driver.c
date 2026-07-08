@@ -63,6 +63,9 @@ static bool gnss_ready = false;
 /** @brief Flag indicando se dados AGPS foram baixados com sucesso. */
 static bool agps_downloaded = false;
 
+/** @brief Timestamp da ultima tentativa de AGPS (para cooldown de retry). */
+static TickType_t agps_last_attempt = 0;
+
 /** @brief Semaforo para sinalizar resultado do AGPS (URC +AGPS:success./+AGPS:<err>) */
 static SemaphoreHandle_t agps_sem = NULL;
 static bool agps_success = false;
@@ -1304,6 +1307,9 @@ esp_err_t simcom_driver_configure_gnss(void) {
 }
 
 esp_err_t simcom_driver_download_agps(void) {
+    /* Registra timestamp para cooldown de retry */
+    agps_last_attempt = xTaskGetTickCount();
+
     if (!gps_powered_on) {
         ESP_LOGW(TAG, "[AGPS] GNSS desligado. Ligando primeiro...");
         esp_err_t e = simcom_driver_gps_power_on();
@@ -2020,6 +2026,11 @@ static void simcom_watchdog_task(void *pvParameters) {
         // Conexao estavel
         if (cellular_mqtt_connected && modem_state == SIMCOM_STATE_MQTT_CONNECTED) {
             connection_attempt_start = 0;
+            // Se AGPS nao foi baixado, tenta novamente (com cooldown de 300s)
+            if (!agps_downloaded && (xTaskGetTickCount() - agps_last_attempt) > pdMS_TO_TICKS(300000)) {
+                ESP_LOGI(TAG, "Watchdog: Tentando AGPS (conectividade 4G ativa)...");
+                simcom_driver_download_agps();
+            }
             // Processamento periodico de SMS de contingencia
             simcom_driver_check_and_process_sms();
             continue;

@@ -1836,6 +1836,47 @@ simcom_driver_download_agps():
 ### Arquivos Modificados
 - `esp32_firmware/main/simcom_driver.c`: check_clock(), check_dns(), download_agps() integrado
 
+---
+
+## Sessão 53 — Retentativa AGPS pós-conexão + GPS resiliente
+**Data:** 2026-07-08
+**Objetivo:** AGPS só rodava uma vez no boot. Se falhava, nunca mais tentava. GPS desistia fácil se modem ocupado.
+
+### Problemas Corrigidos
+
+**Bug1 — AGPS nunca retentava após falha:**
+- `simcom_driver_download_agps()` era chamado UMA vez em `app_main()`. Se o PDP context ainda não estava ativo (leva ~75s), AGPS falhava e nunca mais tentava.
+- Watchdog só tentava AGPS se o modem fosse forçado a reiniciar (AT+CPOWD).
+- **Correção:** Watchdog agora tenta AGPS quando MQTT conectar (`cellular_mqtt_connected`), com cooldown de 300s entre tentativas.
+
+**Bug2 — GPS desistia após 1 check de mutex:**
+- `gps_reader_task` fazia `simcom_driver_is_busy()` uma vez. Se `true`, setava `gps_read_done=true` sem ler GPS.
+- O orchestrator achava que GPS foi lido e só tentava de novo após 2s.
+- Com MQTT publicando a cada ~3-5s, o GPS nunca conseguia o mutex.
+- **Correção:** `gps_reader_task` agora retenta até 3 vezes com 2s de intervalo (total 6s tentando).
+
+### Fluxo Novo
+
+```
+Boot → app_main() → download_agps() → falha (PDP ainda nao ativo)
+  → 75s depois → configure_apn() termina 
+  → MQTT connect → watchdog detecta conexao
+  → watchdog: !agps_downloaded, cooldown OK → download_agps() ← RETRY!
+```
+
+```
+GPS Reader Task:
+  xTaskNotifyWait(5s) → notificado
+  → for retry=0..2:
+      → !simcom_driver_is_busy()? → simcom_driver_get_gps() → break
+      → vTaskDelay(2s) ← aguarda MQTT liberar mutex
+  → gps_read_done = true
+```
+
+### Arquivos Modificados
+- `esp32_firmware/main/main.c`: gps_reader_task com retry de 3x com 2s
+- `esp32_firmware/main/simcom_driver.c`: agps_last_attempt, watchdog com AGPS retry e cooldown 300s
+
 ## Referência Rápida de Comandos
 
 ```powershell

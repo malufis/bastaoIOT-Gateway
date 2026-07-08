@@ -173,6 +173,20 @@ esp_err_t simcom_driver_mqtt_publish(const char *topic, const char *payload, uin
 bool simcom_driver_is_busy(void);
 
 /**
+ * @brief Bloqueia ate obter o mutex do modem (para GPS优先).
+ * @details Diferente de is_busy() que faz check instantaneo,
+ *          esta funcao bloqueia a task ate o mutex ser liberado.
+ * @param timeout_ms Tempo maximo de espera em ms
+ * @return ESP_OK se obteve o mutex, ESP_ERR_TIMEOUT se timeout
+ */
+esp_err_t simcom_driver_lock_gps_mutex(uint32_t timeout_ms);
+
+/**
+ * @brief Libera o mutex do modem (apos simcom_driver_lock_gps_mutex).
+ */
+void simcom_driver_unlock_gps_mutex(void);
+
+/**
  * @brief Retorna o ultimo RSSI em cache (sem enviar comando AT ao modem).
  * @details O cache e atualizado pelo watchdog (a cada 10s) e por
  *          simcom_driver_get_signal_quality(). Seguro chamar de qualquer task.

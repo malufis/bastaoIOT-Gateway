@@ -1004,6 +1004,34 @@ esp_err_t simcom_driver_mqtt_publish(const char *topic, const char *payload, uin
 
 simcom_state_t simcom_driver_get_state(void) { return modem_state; }
 
+/** 
+ * @brief Bloqueia ate obter o mutex do modem (para GPS).
+ * 
+ * Diferente de simcom_driver_is_busy() que faz check instantaneo,
+ * esta funcao BLOQUEIA a task ate o mutex ser liberado ou timeout.
+ * Usado pelo gps_reader_task para garantir acesso ao GPS mesmo
+ * quando MQTT esta publicando.
+ * 
+ * @param timeout_ms Tempo maximo de espera em ms
+ * @return ESP_OK se obteve o mutex, ESP_ERR_TIMEOUT se timeout
+ */
+esp_err_t simcom_driver_lock_gps_mutex(uint32_t timeout_ms) {
+    if (simcom_mutex == NULL) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(simcom_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        return ESP_OK;
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
+/** 
+ * @brief Libera o mutex do modem (apos simcom_driver_lock_gps_mutex).
+ */
+void simcom_driver_unlock_gps_mutex(void) {
+    if (simcom_mutex != NULL) {
+        xSemaphoreGive(simcom_mutex);
+    }
+}
+
 bool simcom_driver_is_busy(void) {
     if (simcom_mutex == NULL) return false;
     if (xSemaphoreTake(simcom_mutex, 0) == pdTRUE) {

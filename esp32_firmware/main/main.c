@@ -668,30 +668,24 @@ static void gps_reader_task(void *pvParameters) {
   while (1) {
     // Aguarda notificacao do orchestrator (com timeout de 5s para nao travar)
     if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, pdMS_TO_TICKS(5000)) == pdTRUE) {
-      // Tenta ler GPS — se modem ocupado, retenta ate 3x com 2s de intervalo
-      bool read_attempted = false;
-      for (int retry = 0; retry < 3; retry++) {
-        if (!simcom_driver_is_busy()) {
-          simcom_gps_data_t gps_new;
-          if (simcom_driver_get_gps(&gps_new) == ESP_OK && gps_new.valid) {
-            bastao_current_status.gps_latitude = gps_new.latitude;
-            bastao_current_status.gps_longitude = gps_new.longitude;
-            if (!bastao_current_status.gps_fix) {
-              bastao_current_status.gps_fix = true;
-              ESP_LOGI(TAG, "GPS FIX OBTIDO! Mudando para polling de 30s.");
-            }
-            gps_data = gps_new;
-            ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
-                     gps_data.latitude, gps_data.longitude);
+      // Bloqueia ate obter o mutex do modem (timeout 10s)
+      // Diferente do retry polling, isso bloqueia a task ATE o mutex ser liberado
+      if (simcom_driver_lock_gps_mutex(10000) == ESP_OK) {
+        simcom_gps_data_t gps_new;
+        if (simcom_driver_get_gps(&gps_new) == ESP_OK && gps_new.valid) {
+          bastao_current_status.gps_latitude = gps_new.latitude;
+          bastao_current_status.gps_longitude = gps_new.longitude;
+          if (!bastao_current_status.gps_fix) {
+            bastao_current_status.gps_fix = true;
+            ESP_LOGI(TAG, "GPS FIX OBTIDO! Mudando para polling de 30s.");
           }
-          read_attempted = true;
-          break;  // Saiu do loop de retry (leitura OK ou CGPSINFO sem fix)
+          gps_data = gps_new;
+          ESP_LOGI(TAG, "GPS atualizado: %.6f, %.6f",
+                   gps_data.latitude, gps_data.longitude);
         }
-        ESP_LOGD(TAG, "GPS: modem ocupado (tentativa %d/3). Aguardando 2s...", retry + 1);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-      }
-      if (!read_attempted) {
-        ESP_LOGW(TAG, "GPS: modem ocupado apos 3 tentativas. Pulando este ciclo.");
+        simcom_driver_unlock_gps_mutex();
+      } else {
+        ESP_LOGW(TAG, "GPS: timeout aguardando mutex do modem (10s). Pulando ciclo.");
       }
       // Sinaliza que a leitura terminou (para o orchestrator continuar)
       gps_read_done = true;

@@ -1195,20 +1195,25 @@ static esp_err_t simcom_driver_check_pdp_context(void) {
         return err;
     }
 
-    // Resposta esperada: +CGPADDR: 1,"10.x.x.x" (com ou sem aspas)
-    // Log do usuario: +CGPADDR: 1,10.64.210.90 (sem aspas!)
-    if (strstr(resp, "\"10.") != NULL || strstr(resp, "\"100.") != NULL || strstr(resp, "\"172.") != NULL ||
-        strstr(resp, ",10.")  != NULL || strstr(resp, ",100.") != NULL || strstr(resp, ",172.") != NULL) {
-        ESP_LOGI(TAG, "[AGPS] Modem possui endereco IP: %s", resp);
-        return ESP_OK;
-    }
-
-    // Pode ser IP publico tambem (menos comum em 4G)
-    if (strstr(resp, "\"") != NULL || strstr(resp, ",") != NULL) {
-        // Tem algum conteudo depois da virgula (provavelmente um IP)
-        char *comma = strchr(resp, ',');
-        if (comma != NULL && *(comma + 1) != '\0' && *(comma + 1) != '"') {
-            ESP_LOGI(TAG, "[AGPS] Modem possui endereco IP: %s", resp);
+    // Resposta esperada: +CGPADDR: 1,"10.x.x.x" ou +CGPADDR: 1,10.x.x.x (com ou sem aspas)
+    // Extrai o IP apos a virgula: busca qualquer padrao IPv4 valido (xxx.xxx.xxx.xxx)
+    char *comma = strstr(resp, ",1,");  // +CGPADDR: 1,IP  — contexto com ",1,"
+    if (comma == NULL) comma = strchr(resp, ',');  // fallback: qualquer virgula
+    if (comma != NULL) {
+        char *ip_start = comma + 1;
+        if (*ip_start == '"') ip_start++;  // pula aspas se houver
+        // Verifica se parece um IPv4: tem digitos e pontos
+        int dots = 0, digits = 0;
+        char *p = ip_start;
+        while ((*p >= '0' && *p <= '9') || *p == '.' || *p == '"') {
+            if (*p == '.') dots++;
+            else if (*p >= '0' && *p <= '9') digits++;
+            else if (*p == '"') break;  // fim do IP com aspas
+            p++;
+        }
+        // IPv4 valido: 3 pontos e pelo menos 4 digitos (ex: 1.2.3.4)
+        if (dots == 3 && digits >= 4) {
+            ESP_LOGI(TAG, "[AGPS] Modem possui endereco IP valido: %s", resp);
             return ESP_OK;
         }
     }

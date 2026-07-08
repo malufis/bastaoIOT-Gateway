@@ -1902,7 +1902,7 @@ OK
 E (38129) SIMCOM_DRV: [AGPS] SEM CONECTIVIDADE 4G! PDP Context inativo ou sem IP.
 ```
 
-**Correção:** Adicionado `strstr(resp, ",10.")` e `",100."` e `",172."` para detectar IP sem aspas. Também adicionado fallback genérico que verifica se há conteúdo após a vírgula.
+**Correção:** Verificação genérica de IPv4 — não fixa mais em prefixos `10.`, `100.` ou `172.`. Agora extrai o valor após a vírgula e valida se tem 3 pontos e pelo menos 4 dígitos (padrão xxx.xxx.xxx.xxx). Funciona com qualquer IP de qualquer operadora, com ou sem aspas.
 
 ### Bug 2 — Cooldown mal posicionado
 
